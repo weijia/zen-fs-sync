@@ -114,11 +114,11 @@ export async function walkFiles(
   const normalizedRoot = normalizePath(root);
 
   async function visit(dir: string): Promise<void> {
-    log(`readdir: ${dir}`);
+    console.log(`[zen-fs-sync] walkFiles readdir: ${dir}`);
     let entries: string[];
     try {
       entries = await fs.readdir(dir);
-      log(`readdir: ${dir} → ${entries.length} entries: [${entries.join(', ')}]`);
+      console.log(`[zen-fs-sync] walkFiles readdir: ${dir} → ${entries.length} entries: [${entries.join(', ')}]`);
     } catch (err: any) {
       console.warn(`[zen-fs-sync] walkFiles readdir FAILED on ${dir}:`, err.message || err);
       return; // 目录不存在或无权限
@@ -132,7 +132,7 @@ export async function walkFiles(
       let relPath = fullPath.slice(normalizedRoot.length) || '/';
       if (!relPath.startsWith('/')) relPath = '/' + relPath;
 
-      log(`stat: ${fullPath}`);
+      console.log(`[zen-fs-sync] walkFiles stat: ${fullPath}`);
       let stat;
       try {
         stat = await fs.stat(fullPath);
@@ -141,25 +141,25 @@ export async function walkFiles(
         continue;
       }
       if (stat.isDirectory()) {
-        log(`  → directory`);
+        console.log(`[zen-fs-sync] walkFiles   → directory ${fullPath}`);
         // 目录不受 filter 限制，始终进入（子文件可能匹配 filter）
         await visit(fullPath);
       } else if (stat.isFile()) {
-        log(`  → file`);
+        console.log(`[zen-fs-sync] walkFiles   → file ${fullPath}`);
         // 只对文件应用路径过滤
         if (!isPathAllowed(relPath, filter)) {
-          log(`  → excluded by filter: ${relPath}`);
+          console.log(`[zen-fs-sync] walkFiles   → excluded by filter: ${relPath}`);
           continue;
         }
         results.push(relPath);
       } else {
-        log(`  → unknown type`);
+        console.log(`[zen-fs-sync] walkFiles   → unknown type ${fullPath}`);
       }
     }
   }
 
   await visit(normalizedRoot);
-  log(`walkFiles(${root}) total: ${results.length} files`);
+  console.log(`[zen-fs-sync] walkFiles(${root}) total: ${results.length} files: [${results.join(', ')}]`);
   return results;
 }
 

@@ -141,11 +141,11 @@ async function walkFiles(fs, root, filter) {
   const results = [];
   const normalizedRoot = normalizePath(root);
   async function visit(dir) {
-    log(`readdir: ${dir}`);
+    console.log(`[zen-fs-sync] walkFiles readdir: ${dir}`);
     let entries;
     try {
       entries = await fs.readdir(dir);
-      log(`readdir: ${dir} \u2192 ${entries.length} entries: [${entries.join(", ")}]`);
+      console.log(`[zen-fs-sync] walkFiles readdir: ${dir} \u2192 ${entries.length} entries: [${entries.join(", ")}]`);
     } catch (err) {
       console.warn(`[zen-fs-sync] walkFiles readdir FAILED on ${dir}:`, err.message || err);
       return;
@@ -155,7 +155,7 @@ async function walkFiles(fs, root, filter) {
       const fullPath = resolvePath(dir, entry);
       let relPath = fullPath.slice(normalizedRoot.length) || "/";
       if (!relPath.startsWith("/")) relPath = "/" + relPath;
-      log(`stat: ${fullPath}`);
+      console.log(`[zen-fs-sync] walkFiles stat: ${fullPath}`);
       let stat;
       try {
         stat = await fs.stat(fullPath);
@@ -164,22 +164,22 @@ async function walkFiles(fs, root, filter) {
         continue;
       }
       if (stat.isDirectory()) {
-        log(`  \u2192 directory`);
+        console.log(`[zen-fs-sync] walkFiles   \u2192 directory ${fullPath}`);
         await visit(fullPath);
       } else if (stat.isFile()) {
-        log(`  \u2192 file`);
+        console.log(`[zen-fs-sync] walkFiles   \u2192 file ${fullPath}`);
         if (!isPathAllowed(relPath, filter)) {
-          log(`  \u2192 excluded by filter: ${relPath}`);
+          console.log(`[zen-fs-sync] walkFiles   \u2192 excluded by filter: ${relPath}`);
           continue;
         }
         results.push(relPath);
       } else {
-        log(`  \u2192 unknown type`);
+        console.log(`[zen-fs-sync] walkFiles   \u2192 unknown type ${fullPath}`);
       }
     }
   }
   await visit(normalizedRoot);
-  log(`walkFiles(${root}) total: ${results.length} files`);
+  console.log(`[zen-fs-sync] walkFiles(${root}) total: ${results.length} files: [${results.join(", ")}]`);
   return results;
 }
 async function buildSnapshot(fs, root, filter) {
