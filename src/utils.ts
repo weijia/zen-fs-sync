@@ -119,8 +119,8 @@ export async function walkFiles(
     }
 
     for (const entry of entries) {
-      // 跳过隐藏文件和 .zenfs-sync 元数据
-      if (entry.startsWith('.')) continue;
+      // 跳过 .zenfs-sync 元数据目录，但保留其他以 . 开头的目录（如 .meta）
+      if (entry === '.zenfs-sync') continue;
 
       const fullPath = resolvePath(dir, entry);
       let relPath = fullPath.slice(normalizedRoot.length) || '/';
