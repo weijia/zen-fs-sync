@@ -8,6 +8,9 @@ import {
   type SyncFilter,
   type SyncableFS,
 } from './types';
+import { createLogger } from './logger';
+
+const log = createLogger('detector');
 
 // ---------------------------------------------------------------------------
 // 路径规范化
@@ -111,10 +114,13 @@ export async function walkFiles(
   const normalizedRoot = normalizePath(root);
 
   async function visit(dir: string): Promise<void> {
+    log(`readdir: ${dir}`);
     let entries: string[];
     try {
       entries = await fs.readdir(dir);
-    } catch {
+      log(`readdir: ${dir} → ${entries.length} entries: [${entries.join(', ')}]`);
+    } catch (err: any) {
+      log(`readdir: ${dir} FAILED:`, err.message || err);
       return; // 目录不存在或无权限
     }
 
@@ -126,19 +132,34 @@ export async function walkFiles(
       let relPath = fullPath.slice(normalizedRoot.length) || '/';
       if (!relPath.startsWith('/')) relPath = '/' + relPath;
 
-      const stat = await fs.stat(fullPath);
+      log(`stat: ${fullPath}`);
+      let stat;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch (err: any) {
+        log(`stat: ${fullPath} FAILED:`, err.message || err);
+        continue;
+      }
       if (stat.isDirectory()) {
+        log(`  → directory`);
         // 目录不受 filter 限制，始终进入（子文件可能匹配 filter）
         await visit(fullPath);
       } else if (stat.isFile()) {
+        log(`  → file`);
         // 只对文件应用路径过滤
-        if (!isPathAllowed(relPath, filter)) continue;
+        if (!isPathAllowed(relPath, filter)) {
+          log(`  → excluded by filter: ${relPath}`);
+          continue;
+        }
         results.push(relPath);
+      } else {
+        log(`  → unknown type`);
       }
     }
   }
 
   await visit(normalizedRoot);
+  log(`walkFiles(${root}) total: ${results.length} files`);
   return results;
 }
 
@@ -154,7 +175,9 @@ export async function buildSnapshot(
   root: string,
   filter?: SyncFilter,
 ): Promise<Map<string, FileSnapshot>> {
+  log(`buildSnapshot: root=${root}`);
   const files = await walkFiles(fs, root, filter);
+  log(`buildSnapshot: walkFiles returned ${files.length} files`);
   const snapshot = new Map<string, FileSnapshot>();
   const normalizedRoot = normalizePath(root);
 
@@ -167,11 +190,12 @@ export async function buildSnapshot(
         size: stat.size,
         mtimeMs: stat.mtimeMs,
       });
-    } catch {
-      // 文件可能在遍历后被删除，跳过
+    } catch (err: any) {
+      log(`buildSnapshot: stat failed for ${fullPath}:`, err.message || err);
     }
   }
 
+  log(`buildSnapshot: done, ${snapshot.size} entries`);
   return snapshot;
 }
 
