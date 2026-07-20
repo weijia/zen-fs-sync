@@ -28,7 +28,10 @@ __export(index_exports, {
   SyncDirection: () => SyncDirection,
   SyncPair: () => SyncPair,
   SyncPairState: () => SyncPairState,
-  ZenFSSync: () => ZenFSSync
+  ZenFSSync: () => ZenFSSync,
+  createLogger: () => createLogger,
+  isDebugEnabled: () => isDebugEnabled,
+  setDebug: () => setDebug
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -217,16 +220,51 @@ function diffSnapshots(source, target) {
   return changes;
 }
 
-// src/detector/incremental.ts
-var IncrementalDetector = class {
-  async detect(source, _target, root, prevSnapshots, filter) {
-    if (!prevSnapshots || prevSnapshots.size === 0) {
-      const currentSnap = await buildSnapshot(source, root, filter);
-      const targetSnap = await buildSnapshot(_target, root, filter);
-      return diffSnapshots(currentSnap, targetSnap);
+// src/logger.ts
+var enabled = false;
+var tagFilter = /* @__PURE__ */ new Set();
+function setDebug(value) {
+  if (typeof value === "string") {
+    enabled = true;
+    tagFilter.clear();
+    for (const tag of value.split(",").map((s) => s.trim()).filter(Boolean)) {
+      tagFilter.add(tag);
     }
+  } else {
+    enabled = value;
+    tagFilter.clear();
+  }
+}
+function isDebugEnabled() {
+  return enabled;
+}
+function createLogger(tag) {
+  return (...args) => {
+    if (!enabled) return;
+    if (tagFilter.size > 0 && !tagFilter.has(tag)) return;
+    console.log(`[zen-fs-sync:${tag}]`, ...args);
+  };
+}
+
+// src/detector/incremental.ts
+var log = createLogger("detector");
+var IncrementalDetector = class {
+  async detect(source, target, root, prevSnapshots, filter) {
+    if (!prevSnapshots || prevSnapshots.size === 0) {
+      log(`[FULL] no prevSnapshots, scanning source + target (root=${root})`);
+      const currentSnap = await buildSnapshot(source, root, filter);
+      const targetSnap = await buildSnapshot(target, root, filter);
+      log(`[FULL] source files: ${currentSnap.size}, target files: ${targetSnap.size}`);
+      const changes2 = diffSnapshots(currentSnap, targetSnap);
+      log(`[FULL] detected ${changes2.length} changes:`, changes2.map((c) => `${c.type}:${c.path}`));
+      return changes2;
+    }
+    log(`[INCREMENTAL] scanning source vs prevSnapshots (${prevSnapshots.size} entries, root=${root})`);
     const currentSourceSnap = await buildSnapshot(source, root, filter);
-    return diffSnapshots(currentSourceSnap, prevSnapshots);
+    log(`[INCREMENTAL] current source files: ${currentSourceSnap.size}`);
+    const changes = diffSnapshots(currentSourceSnap, prevSnapshots);
+    log(`[INCREMENTAL] detected ${changes.length} changes:`, changes.map((c) => `${c.type}:${c.path}`));
+    return changes;
   }
 };
 
@@ -260,6 +298,7 @@ var DefaultConflictResolver = class {
 };
 
 // src/sync-pair.ts
+var log2 = createLogger("sync");
 var SyncPair = class {
   constructor(source, target, options = {}, syncRoot = "/") {
     this.syncRoot = syncRoot;
@@ -275,6 +314,7 @@ var SyncPair = class {
     };
     this.detector = new IncrementalDetector();
     this.resolver = new DefaultConflictResolver();
+    log2(`pair ${this.pairId} created: root=${this.root} dir=${this.options.direction}`);
   }
   syncRoot;
   pairId;
@@ -318,6 +358,7 @@ var SyncPair = class {
       this.lastResult = result;
       this.totalSyncs++;
       this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
+      log2(`sync:end ${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} changes:${result.changes.length} ${result.durationMs}ms`);
       this.emit({
         type: "sync:end",
         pairId: this.pairId,
@@ -327,6 +368,7 @@ var SyncPair = class {
       return result;
     } catch (error) {
       this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
+      log2(`sync:error ${this.pairId}`, error);
       this.emit({
         type: "sync:error",
         pairId: this.pairId,
@@ -356,6 +398,7 @@ var SyncPair = class {
       target: this.options.direction === "bi-directional" /* BiDirectional */ ? setInterval(() => this.onPoll(), intervalMs) : null
     };
     this.state = "watching" /* Watching */;
+    log2(`watch:start ${this.pairId} interval=${intervalMs}ms`);
     this.emit({ type: "watch:start", pairId: this.pairId, timestamp: Date.now() });
   }
   /**
@@ -373,6 +416,7 @@ var SyncPair = class {
       this.debounceTimer = void 0;
     }
     this.state = "idle" /* Idle */;
+    log2(`watch:stop ${this.pairId}`);
     this.emit({ type: "watch:stop", pairId: this.pairId, timestamp: Date.now() });
   }
   // -----------------------------------------------------------------------
@@ -398,6 +442,7 @@ var SyncPair = class {
     this.state = "disposed" /* Disposed */;
     this.listeners.clear();
     this.sourceSnapshots = void 0;
+    log2(`disposed ${this.pairId}`);
   }
   // -----------------------------------------------------------------------
   // 事件
@@ -479,20 +524,24 @@ var SyncPair = class {
           }
           try {
             const content = await src.readFile(srcPath, "utf-8");
+            log2(`WRITE ${change.type} ${srcPath} \u2192 ${tgtPath} (${content.length} bytes)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf("/")));
             await tgt.writeFile(tgtPath, content);
             if (isCreated) filesCreated++;
             else filesUpdated++;
-          } catch {
+          } catch (err) {
+            log2(`WRITE FAIL ${change.type} ${srcPath} \u2192 ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
         }
         case "deleted" /* Deleted */: {
           try {
+            log2(`DELETE ${tgtPath}`);
             await tgt.unlink(tgtPath);
             filesDeleted++;
-          } catch {
+          } catch (err) {
+            log2(`DELETE FAIL ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
@@ -547,12 +596,14 @@ var SyncPair = class {
         buildSnapshot(this.target, this.root, this.options.filter)
       ]);
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+      log2(`initial snapshots: source=${srcSnap.size}, target=${tgtSnap.size}`);
     } else {
       this.sourceSnapshots = await buildSnapshot(
         this.source,
         this.root,
         this.options.filter
       );
+      log2(`initial snapshots: source=${this.sourceSnapshots.size}`);
     }
   }
 };
@@ -741,5 +792,8 @@ var FullDetector = class {
   SyncDirection,
   SyncPair,
   SyncPairState,
-  ZenFSSync
+  ZenFSSync,
+  createLogger,
+  isDebugEnabled,
+  setDebug
 });

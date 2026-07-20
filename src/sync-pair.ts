@@ -36,6 +36,9 @@ import {
   normalizePath,
   resolvePath,
 } from './utils';
+import { createLogger } from './logger';
+
+const log = createLogger('sync');
 
 export class SyncPair {
   readonly pairId: string;
@@ -77,6 +80,8 @@ export class SyncPair {
     // 检测器：watch 模式用增量，手动模式用全量
     this.detector = new IncrementalDetector();
     this.resolver = new DefaultConflictResolver();
+
+    log(`pair ${this.pairId} created: root=${this.root} dir=${this.options.direction}`);
   }
 
   // -----------------------------------------------------------------------
@@ -112,6 +117,8 @@ export class SyncPair {
       this.totalSyncs++;
       this.state = this.watchers ? SyncPairState.Watching : SyncPairState.Idle;
 
+      log(`sync:end ${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} changes:${result.changes.length} ${result.durationMs}ms`);
+
       this.emit({
         type: 'sync:end',
         pairId: this.pairId,
@@ -122,6 +129,7 @@ export class SyncPair {
       return result;
     } catch (error) {
       this.state = this.watchers ? SyncPairState.Watching : SyncPairState.Idle;
+      log(`sync:error ${this.pairId}`, error);
       this.emit({
         type: 'sync:error',
         pairId: this.pairId,
@@ -160,6 +168,7 @@ export class SyncPair {
     };
 
     this.state = SyncPairState.Watching;
+    log(`watch:start ${this.pairId} interval=${intervalMs}ms`);
     this.emit({ type: 'watch:start', pairId: this.pairId, timestamp: Date.now() });
   }
 
@@ -181,6 +190,7 @@ export class SyncPair {
     }
 
     this.state = SyncPairState.Idle;
+    log(`watch:stop ${this.pairId}`);
     this.emit({ type: 'watch:stop', pairId: this.pairId, timestamp: Date.now() });
   }
 
@@ -210,6 +220,7 @@ export class SyncPair {
     this.state = SyncPairState.Disposed;
     this.listeners.clear();
     this.sourceSnapshots = undefined;
+    log(`disposed ${this.pairId}`);
   }
 
   // -----------------------------------------------------------------------
@@ -314,11 +325,13 @@ export class SyncPair {
 
           try {
             const content = await src.readFile(srcPath, 'utf-8');
+            log(`WRITE ${change.type} ${srcPath} → ${tgtPath} (${content.length} bytes)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf('/')));
             await tgt.writeFile(tgtPath, content);
             if (isCreated) filesCreated++;
             else filesUpdated++;
-          } catch {
+          } catch (err) {
+            log(`WRITE FAIL ${change.type} ${srcPath} → ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
@@ -326,9 +339,11 @@ export class SyncPair {
 
         case ChangeType.Deleted: {
           try {
+            log(`DELETE ${tgtPath}`);
             await tgt.unlink(tgtPath);
             filesDeleted++;
-          } catch {
+          } catch (err) {
+            log(`DELETE FAIL ${tgtPath}:`, err);
             // 目标端不存在则跳过
             filesSkipped++;
           }
@@ -392,12 +407,14 @@ export class SyncPair {
       ]);
       // 合并两个快照用于增量检测
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+      log(`initial snapshots: source=${srcSnap.size}, target=${tgtSnap.size}`);
     } else {
       this.sourceSnapshots = await buildSnapshot(
         this.source,
         this.root,
         this.options.filter,
       );
+      log(`initial snapshots: source=${this.sourceSnapshots.size}`);
     }
   }
 }

@@ -326,6 +326,25 @@ declare class ZenFSSync {
 }
 
 /**
+ * zen-fs-sync — Debug Logger
+ *
+ * 轻量级调试日志系统，支持全局开关和标签过滤。
+ *
+ * 使用方式：
+ *   import { createLogger } from './logger';
+ *   const log = createLogger('sync');
+ *   log('file list:', files);           // [zen-fs-sync:sync] file list: [...]
+ *
+ * 开启调试（在调用 createConfigRepo 之前设置）：
+ *   import { setDebug } from 'zen-fs-sync/logger';
+ *   setDebug(true);                        // 开启全部
+ *   setDebug('sync,detector');             // 只开 sync 和 detector 标签
+ */
+declare function setDebug(value: boolean | string): void;
+declare function isDebugEnabled(): boolean;
+declare function createLogger(tag: string): (...args: unknown[]) => void;
+
+/**
  * zen-fs-sync — 全量变更检测器
  *
  * 每次同步都重新扫描两端文件系统，构建完整快照再比较。
@@ -345,7 +364,7 @@ declare class FullDetector implements ChangeDetector {
  */
 
 declare class IncrementalDetector implements ChangeDetector {
-    detect(source: SyncableFS, _target: SyncableFS, root: string, prevSnapshots?: Map<string, FileSnapshot>, filter?: SyncFilter): Promise<ChangeEntry[]>;
+    detect(source: SyncableFS, target: SyncableFS, root: string, prevSnapshots?: Map<string, FileSnapshot>, filter?: SyncFilter): Promise<ChangeEntry[]>;
 }
 
 /**
@@ -362,4 +381,4 @@ declare class DefaultConflictResolver implements ConflictResolver {
     }>;
 }
 
-export { type ChangeDetector, type ChangeEntry, ChangeType, type ConflictEntry, type ConflictResolver, ConflictStrategy, DefaultConflictResolver, type FileSnapshot, type FileStat, FullDetector, IncrementalDetector, type ResolvedSyncOptions, SyncDirection, type SyncEvent, type SyncEventHandler, type SyncEventType, type SyncFilter, type SyncOptions, SyncPair, SyncPairState, type SyncPairStatus, type SyncResult, type SyncableFS, ZenFSSync };
+export { type ChangeDetector, type ChangeEntry, ChangeType, type ConflictEntry, type ConflictResolver, ConflictStrategy, DefaultConflictResolver, type FileSnapshot, type FileStat, FullDetector, IncrementalDetector, type ResolvedSyncOptions, SyncDirection, type SyncEvent, type SyncEventHandler, type SyncEventType, type SyncFilter, type SyncOptions, SyncPair, SyncPairState, type SyncPairStatus, type SyncResult, type SyncableFS, ZenFSSync, createLogger, isDebugEnabled, setDebug };

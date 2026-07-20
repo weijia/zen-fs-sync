@@ -9,6 +9,9 @@
 export { ZenFSSync } from './zen-fs-sync';
 export { SyncPair } from './sync-pair';
 
+// Debug logger
+export { setDebug, isDebugEnabled, createLogger } from './logger';
+
 // 检测器
 export { FullDetector } from './detector/full';
 export { IncrementalDetector } from './detector/incremental';
