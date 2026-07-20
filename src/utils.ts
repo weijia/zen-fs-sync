@@ -120,7 +120,7 @@ export async function walkFiles(
       entries = await fs.readdir(dir);
       log(`readdir: ${dir} → ${entries.length} entries: [${entries.join(', ')}]`);
     } catch (err: any) {
-      log(`readdir: ${dir} FAILED:`, err.message || err);
+      console.warn(`[zen-fs-sync] walkFiles readdir FAILED on ${dir}:`, err.message || err);
       return; // 目录不存在或无权限
     }
 
@@ -137,7 +137,7 @@ export async function walkFiles(
       try {
         stat = await fs.stat(fullPath);
       } catch (err: any) {
-        log(`stat: ${fullPath} FAILED:`, err.message || err);
+        console.warn(`[zen-fs-sync] walkFiles stat FAILED on ${fullPath}:`, err.message || err);
         continue;
       }
       if (stat.isDirectory()) {
@@ -175,9 +175,9 @@ export async function buildSnapshot(
   root: string,
   filter?: SyncFilter,
 ): Promise<Map<string, FileSnapshot>> {
-  log(`buildSnapshot: root=${root}`);
+  console.log(`[zen-fs-sync] buildSnapshot: root=${root}`);
   const files = await walkFiles(fs, root, filter);
-  log(`buildSnapshot: walkFiles returned ${files.length} files`);
+  console.log(`[zen-fs-sync] buildSnapshot: walkFiles returned ${files.length} files`);
   const snapshot = new Map<string, FileSnapshot>();
   const normalizedRoot = normalizePath(root);
 
