@@ -183,11 +183,35 @@ async function walkFiles(fs, root, filter) {
   return results;
 }
 async function buildSnapshot(fs, root, filter) {
-  console.log(`[zen-fs-sync] buildSnapshot: root=${root}`);
-  const files = await walkFiles(fs, root, filter);
-  console.log(`[zen-fs-sync] buildSnapshot: walkFiles returned ${files.length} files`);
-  const snapshot = /* @__PURE__ */ new Map();
   const normalizedRoot = normalizePath(root);
+  console.log(`[zen-fs-sync] buildSnapshot: root=${root}, normalizedRoot=${normalizedRoot}`);
+  try {
+    const rootEntries = await fs.readdir(normalizedRoot);
+    console.log(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) \u2192 ${rootEntries.length} entries: [${rootEntries.join(", ")}]`);
+    for (const entry of rootEntries) {
+      const fullPath = resolvePath(normalizedRoot, entry);
+      try {
+        const stat = await fs.stat(fullPath);
+        const type = stat.isDirectory() ? "DIR" : stat.isFile() ? "FILE" : "OTHER";
+        console.log(`[zen-fs-sync] buildSnapshot:   ${type} ${entry} (fullPath=${fullPath})`);
+        if (stat.isDirectory()) {
+          try {
+            const subEntries = await fs.readdir(fullPath);
+            console.log(`[zen-fs-sync] buildSnapshot:     readdir(${fullPath}) \u2192 [${subEntries.join(", ")}]`);
+          } catch (err) {
+            console.warn(`[zen-fs-sync] buildSnapshot:     readdir(${fullPath}) FAILED:`, err.message || err);
+          }
+        }
+      } catch (err) {
+        console.warn(`[zen-fs-sync] buildSnapshot:   stat(${fullPath}) FAILED:`, err.message || err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) FAILED:`, err.message || err);
+  }
+  const files = await walkFiles(fs, root, filter);
+  console.log(`[zen-fs-sync] buildSnapshot: walkFiles returned ${files.length} files: [${files.join(", ")}]`);
+  const snapshot = /* @__PURE__ */ new Map();
   for (const relPath of files) {
     const fullPath = resolvePath(normalizedRoot, relPath);
     try {
@@ -197,8 +221,7 @@ async function buildSnapshot(fs, root, filter) {
         size: stat.size,
         mtimeMs: stat.mtimeMs
       });
-    } catch (err) {
-      log(`buildSnapshot: stat failed for ${fullPath}:`, err.message || err);
+    } catch {
     }
   }
   log(`buildSnapshot: done, ${snapshot.size} entries`);
