@@ -154,22 +154,35 @@ export class SyncPair {
     }
     if (this.watchers) return; // 已经在 watch
 
-    // 构建初始快照用于增量检测
-    this.buildInitialSnapshots().catch(() => {});
-
-    const intervalMs = Math.max(this.options.debounceMs, 500);
-
-    this.watchers = {
-      source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
-      target:
-        this.options.direction === SyncDirection.BiDirectional
-          ? (setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer)
-          : (null as unknown as NodeJS.Timer),
-    };
-
     this.state = SyncPairState.Watching;
-    log(`watch:start ${this.pairId} interval=${intervalMs}ms`);
+    log(`watch:start ${this.pairId} (building initial snapshots...)`);
     this.emit({ type: 'watch:start', pairId: this.pairId, timestamp: Date.now() });
+
+    // Build initial snapshots BEFORE starting the poll timers.
+    // This prevents the first poll from firing while snapshots are
+    // still undefined (which would trigger a destructive full scan).
+    this.buildInitialSnapshots().then(() => {
+      const intervalMs = Math.max(this.options.debounceMs, 500);
+
+      this.watchers = {
+        source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
+        target:
+          this.options.direction === SyncDirection.BiDirectional
+            ? (setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer)
+            : (null as unknown as NodeJS.Timer),
+      };
+
+      log(`watch:start ${this.pairId} interval=${intervalMs}ms (snapshots ready)`);
+    }).catch((err) => {
+      log(`watch:init-snapshots failed ${this.pairId}`, err);
+      // Still start polling even if snapshots fail — the next sync() call
+      // will re-build snapshots via the full-scan fallback path.
+      const intervalMs = Math.max(this.options.debounceMs, 500);
+      this.watchers = {
+        source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
+        target: null as unknown as NodeJS.Timer,
+      };
+    });
   }
 
   /**
@@ -367,9 +380,21 @@ export class SyncPair {
   }
 
   private async syncBidirectional(): Promise<SyncResult> {
-    // 先 source → target
+    // On the very first sync (no snapshots yet), pull from target first so
+    // that files that only exist remotely are copied into the source
+    // before we attempt any bidirectional diff.  This prevents the
+    // catastrophic scenario where an empty local cache would cause all
+    // remote files to be treated as "deleted" and removed.
+    if (!this.sourceSnapshots || this.sourceSnapshots.size === 0) {
+      log(`[BI] first sync — pulling target → source first`);
+      const pull = await this.syncOneWay(this.target, this.source, 'init:target→source');
+      if (pull.filesCreated > 0 || pull.filesUpdated > 0) {
+        log(`[BI] initial pull complete: +${pull.filesCreated} ~${pull.filesUpdated}`);
+      }
+    }
+
+    // Normal bidirectional: source → target, then target → source
     const forward = await this.syncOneWay(this.source, this.target, 'source→target');
-    // 再 target → source
     const reverse = await this.syncOneWay(this.target, this.source, 'target→source');
 
     return {

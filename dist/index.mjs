@@ -399,16 +399,24 @@ var SyncPair = class {
       throw new Error(`SyncPair ${this.pairId} has been disposed`);
     }
     if (this.watchers) return;
-    this.buildInitialSnapshots().catch(() => {
-    });
-    const intervalMs = Math.max(this.options.debounceMs, 500);
-    this.watchers = {
-      source: setInterval(() => this.onPoll(), intervalMs),
-      target: this.options.direction === "bi-directional" /* BiDirectional */ ? setInterval(() => this.onPoll(), intervalMs) : null
-    };
     this.state = "watching" /* Watching */;
-    log3(`watch:start ${this.pairId} interval=${intervalMs}ms`);
+    log3(`watch:start ${this.pairId} (building initial snapshots...)`);
     this.emit({ type: "watch:start", pairId: this.pairId, timestamp: Date.now() });
+    this.buildInitialSnapshots().then(() => {
+      const intervalMs = Math.max(this.options.debounceMs, 500);
+      this.watchers = {
+        source: setInterval(() => this.onPoll(), intervalMs),
+        target: this.options.direction === "bi-directional" /* BiDirectional */ ? setInterval(() => this.onPoll(), intervalMs) : null
+      };
+      log3(`watch:start ${this.pairId} interval=${intervalMs}ms (snapshots ready)`);
+    }).catch((err) => {
+      log3(`watch:init-snapshots failed ${this.pairId}`, err);
+      const intervalMs = Math.max(this.options.debounceMs, 500);
+      this.watchers = {
+        source: setInterval(() => this.onPoll(), intervalMs),
+        target: null
+      };
+    });
   }
   /**
    * 停止自动监听。
@@ -572,6 +580,13 @@ var SyncPair = class {
     };
   }
   async syncBidirectional() {
+    if (!this.sourceSnapshots || this.sourceSnapshots.size === 0) {
+      log3(`[BI] first sync \u2014 pulling target \u2192 source first`);
+      const pull = await this.syncOneWay(this.target, this.source, "init:target\u2192source");
+      if (pull.filesCreated > 0 || pull.filesUpdated > 0) {
+        log3(`[BI] initial pull complete: +${pull.filesCreated} ~${pull.filesUpdated}`);
+      }
+    }
     const forward = await this.syncOneWay(this.source, this.target, "source\u2192target");
     const reverse = await this.syncOneWay(this.target, this.source, "target\u2192source");
     return {
