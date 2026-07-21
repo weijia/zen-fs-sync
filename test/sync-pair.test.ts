@@ -98,6 +98,93 @@ describe('SyncPair', () => {
     await expect(pair.sync()).rejects.toThrow('disposed');
   });
 
+  it('双向同步：首次同步合并两端文件', async () => {
+    const src = new MockFS({
+      '/shared/a.json': '{"from":"source"}',
+      '/shared/b.json': '{"both":"src newer"}',
+    });
+    const tgt = new MockFS({
+      '/shared/c.json': '{"from":"target"}',
+      '/shared/b.json': '{"both":"tgt older"}',
+    });
+    // Make source b.json newer
+    src.setMtime('/shared/b.json', 2000);
+    tgt.setMtime('/shared/b.json', 1000);
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    const result = await pair.sync();
+
+    expect(result.filesCreated).toBe(2); // a→target, c→source
+    expect(result.filesUpdated).toBe(1); // b→target (source newer)
+    // a.json copied from source to target
+    expect(tgt.getContent('/shared/a.json')).toBe('{"from":"source"}');
+    // c.json copied from target to source
+    expect(src.getContent('/shared/c.json')).toBe('{"from":"target"}');
+    // b.json: source is newer, so target gets source version
+    expect(tgt.getContent('/shared/b.json')).toBe('{"both":"src newer"}');
+  });
+
+  it('双向同步：target 更新时拉回 source', async () => {
+    const src = new MockFS({ '/shared/x.json': '{"v":1}' });
+    const tgt = new MockFS({ '/shared/x.json': '{"v":2}' });
+    // Target is newer
+    tgt.setMtime('/shared/x.json', 3000);
+    src.setMtime('/shared/x.json', 1000);
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    const result = await pair.sync();
+
+    expect(result.filesUpdated).toBe(1);
+    expect(src.getContent('/shared/x.json')).toBe('{"v":2}');
+  });
+
+  it('双向同步：相同文件不操作', async () => {
+    const content = '{"same":true}';
+    const src = new MockFS({ '/shared/s.json': content });
+    const tgt = new MockFS({ '/shared/s.json': content });
+    // Same content, same mtime
+    src.setMtime('/shared/s.json', 1000);
+    tgt.setMtime('/shared/s.json', 1000);
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    const result = await pair.sync();
+
+    expect(result.filesCreated).toBe(0);
+    expect(result.filesUpdated).toBe(0);
+    expect(result.filesDeleted).toBe(0);
+  });
+
+  it('双向同步：连续同步不重复操作', async () => {
+    const src = new MockFS({ '/shared/x.json': '{"v":1}' });
+    const tgt = new MockFS();
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    const r1 = await pair.sync();
+    expect(r1.filesCreated).toBe(1);
+
+    const r2 = await pair.sync();
+    expect(r2.filesCreated).toBe(0);
+    expect(r2.filesUpdated).toBe(0);
+  });
+
+  it('双向同步：一端不可达时跳过', async () => {
+    const src = new MockFS({ '/a.json': '{}' });
+
+    // Create a "broken" FS that throws on readdir
+    const broken: any = {
+      readdir: () => Promise.reject(new Error('network error')),
+      stat: () => Promise.reject(new Error('network error')),
+      readFile: () => Promise.reject(new Error('network error')),
+    };
+
+    const pair = new SyncPair(src, broken, { direction: SyncDirection.BiDirectional }, '/');
+    const result = await pair.sync();
+
+    expect(result.filesCreated).toBe(0);
+    expect(result.filesSkipped).toBe(0);
+    // Should not throw, just skip
+  });
+
   it('事件通知', async () => {
     const events: string[] = [];
     const pair = new SyncPair(source, target, {}, '/');

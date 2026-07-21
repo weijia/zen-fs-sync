@@ -129,4 +129,16 @@ export class MockFS implements SyncableFS {
   listFiles(): string[] {
     return Array.from(this.files.keys());
   }
+
+  /** 设置文件 mtime（测试用） */
+  setMtime(path: string, mtimeMs: number): void {
+    const file = this.files.get(path);
+    if (!file) throw new Error(`ENOENT: ${path}`);
+    file.mtimeMs = mtimeMs;
+  }
+
+  /** 获取文件 mtime（测试用） */
+  getMtime(path: string): number {
+    return this.files.get(path)?.mtimeMs ?? 0;
+  }
 }

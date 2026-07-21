@@ -413,6 +413,12 @@ export class SyncPair {
     // Merge snapshots for next incremental sync cycle
     this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
 
+    // Log file listing from both sides
+    const srcPaths = Array.from(srcSnap.keys()).sort();
+    const tgtPaths = Array.from(tgtSnap.keys()).sort();
+    console.log(`[zen-fs-sync] BI files on source (${srcPaths.length}): [${srcPaths.join(', ')}]`);
+    console.log(`[zen-fs-sync] BI files on target (${tgtPaths.length}): [${tgtPaths.join(', ')}]`);
+
     let filesCreated = 0;
     let filesUpdated = 0;
     let filesDeleted = 0;

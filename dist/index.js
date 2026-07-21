@@ -661,6 +661,10 @@ var SyncPair = class {
       };
     }
     this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+    const srcPaths = Array.from(srcSnap.keys()).sort();
+    const tgtPaths = Array.from(tgtSnap.keys()).sort();
+    console.log(`[zen-fs-sync] BI files on source (${srcPaths.length}): [${srcPaths.join(", ")}]`);
+    console.log(`[zen-fs-sync] BI files on target (${tgtPaths.length}): [${tgtPaths.join(", ")}]`);
     let filesCreated = 0;
     let filesUpdated = 0;
     let filesDeleted = 0;
