@@ -246,6 +246,8 @@ declare class SyncPair {
     private emit;
     private syncOneWay;
     private syncBidirectional;
+    private copyFile;
+    private writeFileBoth;
     private onPoll;
     private buildInitialSnapshots;
 }

@@ -15,6 +15,7 @@ import {
   SyncEventType,
   SyncPairState,
   type ChangeDetector,
+  type ChangeEntry,
   type ConflictEntry,
   type ConflictResolver,
   type FileSnapshot,
@@ -390,35 +391,148 @@ export class SyncPair {
   }
 
   private async syncBidirectional(): Promise<SyncResult> {
-    // On the very first sync (no snapshots yet), pull from target first so
-    // that files that only exist remotely are copied into the source
-    // before we attempt any bidirectional diff.  This prevents the
-    // catastrophic scenario where an empty local cache would cause all
-    // remote files to be treated as "deleted" and removed.
-    if (!this.sourceSnapshots || this.sourceSnapshots.size === 0) {
-      log(`[BI] first sync — pulling target → source first`);
-      const pull = await this.syncOneWay(this.target, this.source, 'init:target→source');
-      if (pull.filesCreated > 0 || pull.filesUpdated > 0) {
-        log(`[BI] initial pull complete: +${pull.filesCreated} ~${pull.filesUpdated}`);
+    console.log(`[zen-fs-sync] syncBidirectional START pairId=${this.pairId} root=${this.root}`);
+    const startTime = Date.now();
+
+    const [srcSnap, tgtSnap] = await Promise.all([
+      buildSnapshot(this.source, this.root, this.options.filter),
+      buildSnapshot(this.target, this.root, this.options.filter),
+    ]);
+
+    if (srcSnap === null || tgtSnap === null) {
+      console.log(`[zen-fs-sync] syncBidirectional SKIP (one side unreachable)`);
+      return {
+        pairId: this.pairId,
+        direction: SyncDirection.BiDirectional,
+        timestamp: Date.now(),
+        filesCreated: 0, filesUpdated: 0, filesDeleted: 0, filesSkipped: 0,
+        conflicts: [], changes: [], durationMs: Date.now() - startTime,
+      };
+    }
+
+    // Merge snapshots for next incremental sync cycle
+    this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+
+    let filesCreated = 0;
+    let filesUpdated = 0;
+    let filesDeleted = 0;
+    let filesSkipped = 0;
+    const conflicts: ConflictEntry[] = [];
+    const changes: ChangeEntry[] = [];
+
+    const allPaths = new Set([...srcSnap.keys(), ...tgtSnap.keys()]);
+
+    for (const path of allPaths) {
+      const srcEntry = srcSnap.get(path);
+      const tgtEntry = tgtSnap.get(path);
+
+      if (!srcEntry && tgtEntry) {
+        // Only on target → copy to source
+        try {
+          await this.copyFile(this.target, this.source, path);
+          filesCreated++;
+          changes.push({ path, type: ChangeType.Created, sourceSnapshot: tgtEntry });
+          console.log(`[zen-fs-sync] COPY target→source ${path}`);
+        } catch (err) {
+          console.error(`[zen-fs-sync] COPY FAIL target→source ${path}:`, err);
+          filesSkipped++;
+        }
+      } else if (srcEntry && !tgtEntry) {
+        // Only on source → copy to target
+        try {
+          await this.copyFile(this.source, this.target, path);
+          filesCreated++;
+          changes.push({ path, type: ChangeType.Created, sourceSnapshot: srcEntry });
+          console.log(`[zen-fs-sync] COPY source→target ${path}`);
+        } catch (err) {
+          console.error(`[zen-fs-sync] COPY FAIL source→target ${path}:`, err);
+          filesSkipped++;
+        }
+      } else if (srcEntry && tgtEntry) {
+        // Both have it — compare mtime
+        if (srcEntry.mtimeMs === tgtEntry.mtimeMs && srcEntry.size === tgtEntry.size) {
+          continue; // Identical
+        }
+
+        if (srcEntry.mtimeMs > tgtEntry.mtimeMs) {
+          try {
+            await this.copyFile(this.source, this.target, path);
+            filesUpdated++;
+            changes.push({ path, type: ChangeType.Modified, sourceSnapshot: srcEntry, targetSnapshot: tgtEntry });
+            console.log(`[zen-fs-sync] UPDATE source→target ${path} (src newer mtime=${srcEntry.mtimeMs} > tgt=${tgtEntry.mtimeMs})`);
+          } catch (err) {
+            console.error(`[zen-fs-sync] UPDATE FAIL source→target ${path}:`, err);
+            filesSkipped++;
+          }
+        } else if (tgtEntry.mtimeMs > srcEntry.mtimeMs) {
+          try {
+            await this.copyFile(this.target, this.source, path);
+            filesUpdated++;
+            changes.push({ path, type: ChangeType.Modified, sourceSnapshot: tgtEntry, targetSnapshot: srcEntry });
+            console.log(`[zen-fs-sync] UPDATE target→source ${path} (tgt newer mtime=${tgtEntry.mtimeMs} > src=${srcEntry.mtimeMs})`);
+          } catch (err) {
+            console.error(`[zen-fs-sync] UPDATE FAIL target→source ${path}:`, err);
+            filesSkipped++;
+          }
+        } else {
+          // Same mtime but different size — conflict
+          const srcContent = await this.source.readFile(resolvePath(this.root, path), 'utf-8');
+          const tgtContent = await this.target.readFile(resolvePath(this.root, path), 'utf-8');
+          if (srcContent === tgtContent) {
+            continue; // Content identical despite size mismatch (encoding?)
+          }
+          const resolved = await this.resolver.resolve(
+            path, srcContent, tgtContent, this.options.conflictStrategy,
+          );
+          conflicts.push({
+            path,
+            sourceContent: srcContent,
+            targetContent: tgtContent,
+            resolvedWith: resolved.strategy,
+            mergedContent: resolved.strategy === ConflictStrategy.Merge ? resolved.content : undefined,
+          });
+          await this.writeFileBoth(path, resolved.content);
+          filesUpdated++;
+          changes.push({ path, type: ChangeType.Modified, sourceSnapshot: { ...srcEntry, mtimeMs: Date.now() }, targetSnapshot: srcEntry });
+          console.log(`[zen-fs-sync] CONFLICT ${path} resolved=${resolved.strategy}`);
+        }
       }
     }
 
-    // Normal bidirectional: source → target, then target → source
-    const forward = await this.syncOneWay(this.source, this.target, 'source→target');
-    const reverse = await this.syncOneWay(this.target, this.source, 'target→source');
+    const durationMs = Date.now() - startTime;
+    console.log(`[zen-fs-sync] syncBidirectional END pairId=${this.pairId} +${filesCreated}/~${filesUpdated}/-${filesDeleted} ${durationMs}ms`);
 
     return {
       pairId: this.pairId,
       direction: SyncDirection.BiDirectional,
       timestamp: Date.now(),
-      filesCreated: forward.filesCreated + reverse.filesCreated,
-      filesUpdated: forward.filesUpdated + reverse.filesUpdated,
-      filesDeleted: forward.filesDeleted + reverse.filesDeleted,
-      filesSkipped: forward.filesSkipped + reverse.filesSkipped,
-      conflicts: [...forward.conflicts, ...reverse.conflicts],
-      changes: [...forward.changes, ...reverse.changes],
-      durationMs: 0,
+      filesCreated,
+      filesUpdated,
+      filesDeleted,
+      filesSkipped,
+      conflicts,
+      changes,
+      durationMs,
     };
+  }
+
+  // -----------------------------------------------------------------------
+  // Helpers
+  // -----------------------------------------------------------------------
+
+  private async copyFile(from: SyncableFS, to: SyncableFS, relPath: string): Promise<void> {
+    const fullPath = resolvePath(this.root, relPath);
+    const content = await from.readFile(fullPath, 'utf-8');
+    await ensureDir(to, fullPath.substring(0, fullPath.lastIndexOf('/')));
+    await to.writeFile(fullPath, content);
+  }
+
+  private async writeFileBoth(relPath: string, content: string): Promise<void> {
+    const fullPath = resolvePath(this.root, relPath);
+    await ensureDir(this.source, fullPath.substring(0, fullPath.lastIndexOf('/')));
+    await ensureDir(this.target, fullPath.substring(0, fullPath.lastIndexOf('/')));
+    await this.source.writeFile(fullPath, content);
+    await this.target.writeFile(fullPath, content);
   }
 
   private async onPoll(): Promise<void> {
