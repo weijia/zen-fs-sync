@@ -189,7 +189,7 @@ async function buildSnapshot(fs, root, filter) {
     } catch {
     }
   }
-  log(`buildSnapshot: done, ${snapshot.size} entries`);
+  console.log(`[zen-fs-sync] buildSnapshot: done, ${snapshot.size} entries`);
   return snapshot;
 }
 async function ensureDir(fs, dirPath) {
@@ -234,7 +234,7 @@ function isJsonPath(path) {
 }
 function diffSnapshots(source, target) {
   if (source === null || target === null) {
-    log(`diffSnapshots: one side is null (unreachable) \u2014 skipping to prevent false deletions`);
+    console.log(`[zen-fs-sync] diffSnapshots: one side is null (unreachable) \u2014 skipping to prevent false deletions`);
     return [];
   }
   const changes = [];
@@ -365,10 +365,12 @@ var SyncPair = class {
       throw new Error(`SyncPair ${this.pairId} has been disposed`);
     }
     if (this.state === "syncing" /* Syncing */) {
-      throw new Error(`SyncPair ${this.pairId} is already syncing`);
+      console.log(`[zen-fs-sync] sync SKIP (already syncing) pairId=${this.pairId}`);
+      return this.lastResult;
     }
     const startTime = Date.now();
     this.state = "syncing" /* Syncing */;
+    console.log(`[zen-fs-sync] sync START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
     this.emit({ type: "sync:start", pairId: this.pairId, timestamp: Date.now() });
     try {
       let result;
@@ -381,7 +383,7 @@ var SyncPair = class {
       this.lastResult = result;
       this.totalSyncs++;
       this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
-      log3(`sync:end ${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} changes:${result.changes.length} ${result.durationMs}ms`);
+      console.log(`[zen-fs-sync] sync END pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
       this.emit({
         type: "sync:end",
         pairId: this.pairId,
@@ -391,7 +393,7 @@ var SyncPair = class {
       return result;
     } catch (error) {
       this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
-      log3(`sync:error ${this.pairId}`, error);
+      console.error(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
       this.emit({
         type: "sync:error",
         pairId: this.pairId,
@@ -414,6 +416,7 @@ var SyncPair = class {
     }
     if (this.watchers) return;
     this.state = "watching" /* Watching */;
+    console.log(`[zen-fs-sync] watch START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
     log3(`watch:start ${this.pairId} (building initial snapshots...)`);
     this.emit({ type: "watch:start", pairId: this.pairId, timestamp: Date.now() });
     this.buildInitialSnapshots().then(() => {
@@ -502,6 +505,7 @@ var SyncPair = class {
   // 内部实现
   // -----------------------------------------------------------------------
   async syncOneWay(src, tgt, directionLabel) {
+    console.log(`[zen-fs-sync] syncOneWay START direction=${directionLabel} pairId=${this.pairId}`);
     const changes = await this.detector.detect(
       src,
       tgt,
@@ -509,6 +513,7 @@ var SyncPair = class {
       this.sourceSnapshots,
       this.options.filter
     );
+    console.log(`[zen-fs-sync] syncOneWay DETECTED ${changes.length} changes (${directionLabel}):`, changes.map((c) => `${c.type}:${c.path}`));
     const newSnap = await buildSnapshot(src, this.root, this.options.filter);
     if (newSnap !== null) {
       this.sourceSnapshots = newSnap;
@@ -558,24 +563,24 @@ var SyncPair = class {
           }
           try {
             const content = await src.readFile(srcPath, "utf-8");
-            log3(`WRITE ${change.type} ${srcPath} \u2192 ${tgtPath} (${content.length} bytes)`);
+            console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath} (${content.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf("/")));
             await tgt.writeFile(tgtPath, content);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
-            log3(`WRITE FAIL ${change.type} ${srcPath} \u2192 ${tgtPath}:`, err);
+            console.error(`[zen-fs-sync] WRITE FAIL ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
         }
         case "deleted" /* Deleted */: {
           try {
-            log3(`DELETE ${tgtPath}`);
+            console.log(`[zen-fs-sync] DELETE [${directionLabel}] ${tgtPath}`);
             await tgt.unlink(tgtPath);
             filesDeleted++;
           } catch (err) {
-            log3(`DELETE FAIL ${tgtPath}:`, err);
+            console.warn(`[zen-fs-sync] DELETE SKIP [${directionLabel}] ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
@@ -620,7 +625,10 @@ var SyncPair = class {
     };
   }
   async onPoll() {
-    if (this.state === "syncing" /* Syncing */) return;
+    if (this.state === "syncing" /* Syncing */) {
+      console.log(`[zen-fs-sync] onPoll SKIP (already syncing) pairId=${this.pairId}`);
+      return;
+    }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
@@ -641,7 +649,7 @@ var SyncPair = class {
         return;
       }
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
-      log3(`initial snapshots: source=${srcSnap.size}, target=${tgtSnap.size}`);
+      console.log(`[zen-fs-sync] initial snapshots: source=${srcSnap.size} files, target=${tgtSnap.size} files (merged=${this.sourceSnapshots.size})`);
     } else {
       const snap = await buildSnapshot(
         this.source,
@@ -650,7 +658,7 @@ var SyncPair = class {
       );
       if (snap !== null) {
         this.sourceSnapshots = snap;
-        log3(`initial snapshots: source=${snap.size}`);
+        console.log(`[zen-fs-sync] initial snapshots: source=${snap.size} files`);
       } else {
         log3(`buildInitialSnapshots: source unreachable (null) \u2014 skipping init`);
       }

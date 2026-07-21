@@ -227,7 +227,7 @@ export async function buildSnapshot(
     }
   }
 
-  log(`buildSnapshot: done, ${snapshot.size} entries`);
+  console.log(`[zen-fs-sync] buildSnapshot: done, ${snapshot.size} entries`);
   return snapshot;
 }
 
@@ -321,7 +321,7 @@ export function diffSnapshots(
 ): import('./types').ChangeEntry[] {
   // If either snapshot is null (FS unreachable), skip — don't infer deletions.
   if (source === null || target === null) {
-    log(`diffSnapshots: one side is null (unreachable) — skipping to prevent false deletions`);
+    console.log(`[zen-fs-sync] diffSnapshots: one side is null (unreachable) — skipping to prevent false deletions`);
     return [];
   }
 
