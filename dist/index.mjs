@@ -171,6 +171,8 @@ async function buildSnapshot(fs, root, filter) {
     }
   } catch (err) {
     console.warn(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) FAILED:`, err.message || err);
+    console.warn(`[zen-fs-sync] buildSnapshot: ABORTING \u2014 returning null to prevent false deletions`);
+    return null;
   }
   const files = await walkFiles(fs, root, filter);
   console.log(`[zen-fs-sync] buildSnapshot: walkFiles returned ${files.length} files: [${files.join(", ")}]`);
@@ -231,6 +233,10 @@ function isJsonPath(path) {
   return path.endsWith(".json");
 }
 function diffSnapshots(source, target) {
+  if (source === null || target === null) {
+    log(`diffSnapshots: one side is null (unreachable) \u2014 skipping to prevent false deletions`);
+    return [];
+  }
   const changes = [];
   for (const [path, snap] of source) {
     if (!target.has(path)) {
@@ -263,6 +269,10 @@ var IncrementalDetector = class {
       log2(`[FULL] no prevSnapshots, scanning source + target (root=${root})`);
       const currentSnap = await buildSnapshot(source, root, filter);
       const targetSnap = await buildSnapshot(target, root, filter);
+      if (currentSnap === null || targetSnap === null) {
+        log2(`[FULL] one side unreachable (null) \u2014 skipping sync cycle`);
+        return [];
+      }
       log2(`[FULL] source files: ${currentSnap.size}, target files: ${targetSnap.size}`);
       const changes2 = diffSnapshots(currentSnap, targetSnap);
       log2(`[FULL] detected ${changes2.length} changes:`, changes2.map((c) => `${c.type}:${c.path}`));
@@ -270,6 +280,10 @@ var IncrementalDetector = class {
     }
     log2(`[INCREMENTAL] scanning source vs prevSnapshots (${prevSnapshots.size} entries, root=${root})`);
     const currentSourceSnap = await buildSnapshot(source, root, filter);
+    if (currentSourceSnap === null) {
+      log2(`[INCREMENTAL] source unreachable (null) \u2014 skipping sync cycle`);
+      return [];
+    }
     log2(`[INCREMENTAL] current source files: ${currentSourceSnap.size}`);
     const changes = diffSnapshots(currentSourceSnap, prevSnapshots);
     log2(`[INCREMENTAL] detected ${changes.length} changes:`, changes.map((c) => `${c.type}:${c.path}`));
@@ -495,7 +509,10 @@ var SyncPair = class {
       this.sourceSnapshots,
       this.options.filter
     );
-    this.sourceSnapshots = await buildSnapshot(src, this.root, this.options.filter);
+    const newSnap = await buildSnapshot(src, this.root, this.options.filter);
+    if (newSnap !== null) {
+      this.sourceSnapshots = newSnap;
+    }
     let filesCreated = 0;
     let filesUpdated = 0;
     let filesDeleted = 0;
@@ -619,15 +636,24 @@ var SyncPair = class {
         buildSnapshot(this.source, this.root, this.options.filter),
         buildSnapshot(this.target, this.root, this.options.filter)
       ]);
+      if (srcSnap === null || tgtSnap === null) {
+        log3(`buildInitialSnapshots: one side unreachable (null) \u2014 skipping init`);
+        return;
+      }
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
       log3(`initial snapshots: source=${srcSnap.size}, target=${tgtSnap.size}`);
     } else {
-      this.sourceSnapshots = await buildSnapshot(
+      const snap = await buildSnapshot(
         this.source,
         this.root,
         this.options.filter
       );
-      log3(`initial snapshots: source=${this.sourceSnapshots.size}`);
+      if (snap !== null) {
+        this.sourceSnapshots = snap;
+        log3(`initial snapshots: source=${snap.size}`);
+      } else {
+        log3(`buildInitialSnapshots: source unreachable (null) \u2014 skipping init`);
+      }
     }
   }
 };
@@ -803,6 +829,9 @@ var FullDetector = class {
       buildSnapshot(source, root, filter),
       buildSnapshot(target, root, filter)
     ]);
+    if (sourceSnap === null || targetSnap === null) {
+      return [];
+    }
     return diffSnapshots(sourceSnap, targetSnap);
   }
 };

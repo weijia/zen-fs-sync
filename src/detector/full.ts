@@ -26,6 +26,10 @@ export class FullDetector implements ChangeDetector {
       buildSnapshot(source, root, filter),
       buildSnapshot(target, root, filter),
     ]);
+    // If either side is unreachable (null), skip this sync cycle.
+    if (sourceSnap === null || targetSnap === null) {
+      return [];
+    }
     return diffSnapshots(sourceSnap, targetSnap);
   }
 }

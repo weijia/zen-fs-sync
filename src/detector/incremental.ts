@@ -25,6 +25,11 @@ export class IncrementalDetector implements ChangeDetector {
       log(`[FULL] no prevSnapshots, scanning source + target (root=${root})`);
       const currentSnap = await buildSnapshot(source, root, filter);
       const targetSnap = await buildSnapshot(target, root, filter);
+      // If either side is unreachable, skip to prevent false deletions.
+      if (currentSnap === null || targetSnap === null) {
+        log(`[FULL] one side unreachable (null) — skipping sync cycle`);
+        return [];
+      }
       log(`[FULL] source files: ${currentSnap.size}, target files: ${targetSnap.size}`);
       const changes = diffSnapshots(currentSnap, targetSnap);
       log(`[FULL] detected ${changes.length} changes:`, changes.map(c => `${c.type}:${c.path}`));
@@ -34,6 +39,10 @@ export class IncrementalDetector implements ChangeDetector {
     // 增量：只扫描源端，与上次源端快照对比
     log(`[INCREMENTAL] scanning source vs prevSnapshots (${prevSnapshots.size} entries, root=${root})`);
     const currentSourceSnap = await buildSnapshot(source, root, filter);
+    if (currentSourceSnap === null) {
+      log(`[INCREMENTAL] source unreachable (null) — skipping sync cycle`);
+      return [];
+    }
     log(`[INCREMENTAL] current source files: ${currentSourceSnap.size}`);
     const changes = diffSnapshots(currentSourceSnap, prevSnapshots);
     log(`[INCREMENTAL] detected ${changes.length} changes:`, changes.map(c => `${c.type}:${c.path}`));

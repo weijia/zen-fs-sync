@@ -174,11 +174,12 @@ export async function buildSnapshot(
   fs: SyncableFS,
   root: string,
   filter?: SyncFilter,
-): Promise<Map<string, FileSnapshot>> {
+): Promise<Map<string, FileSnapshot> | null> {
   const normalizedRoot = normalizePath(root);
   console.log(`[zen-fs-sync] buildSnapshot: root=${root}, normalizedRoot=${normalizedRoot}`);
 
-  // Direct readdir test — bypass walkFiles to see what's actually in the root
+  // Guard: if root readdir fails, the FS is unreachable — return null
+  // so callers can skip this sync cycle instead of treating it as empty.
   try {
     const rootEntries = await fs.readdir(normalizedRoot);
     console.log(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) → ${rootEntries.length} entries: [${rootEntries.join(', ')}]`);
@@ -204,6 +205,8 @@ export async function buildSnapshot(
     }
   } catch (err: any) {
     console.warn(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) FAILED:`, err.message || err);
+    console.warn(`[zen-fs-sync] buildSnapshot: ABORTING — returning null to prevent false deletions`);
+    return null;
   }
 
   const files = await walkFiles(fs, root, filter);
@@ -313,9 +316,15 @@ export function isJsonPath(path: string): boolean {
  * 比较两组快照，返回 source 相对于 target 的变更。
  */
 export function diffSnapshots(
-  source: Map<string, FileSnapshot>,
-  target: Map<string, FileSnapshot>,
+  source: Map<string, FileSnapshot> | null,
+  target: Map<string, FileSnapshot> | null,
 ): import('./types').ChangeEntry[] {
+  // If either snapshot is null (FS unreachable), skip — don't infer deletions.
+  if (source === null || target === null) {
+    log(`diffSnapshots: one side is null (unreachable) — skipping to prevent false deletions`);
+    return [];
+  }
+
   const changes: import('./types').ChangeEntry[] = [];
 
   // source 中有、target 中没有 → created

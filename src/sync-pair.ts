@@ -281,8 +281,13 @@ export class SyncPair {
       this.options.filter,
     );
 
-    // 更新快照
-    this.sourceSnapshots = await buildSnapshot(src, this.root, this.options.filter);
+    // 更新快照 — only if the source is reachable (not null).
+    // If buildSnapshot returns null, keep the previous snapshot to avoid
+    // treating an unreachable FS as "all files deleted" on the next cycle.
+    const newSnap = await buildSnapshot(src, this.root, this.options.filter);
+    if (newSnap !== null) {
+      this.sourceSnapshots = newSnap;
+    }
 
     let filesCreated = 0;
     let filesUpdated = 0;
@@ -430,16 +435,27 @@ export class SyncPair {
         buildSnapshot(this.source, this.root, this.options.filter),
         buildSnapshot(this.target, this.root, this.options.filter),
       ]);
+      // If either side is unreachable, skip initialization (leave undefined).
+      // The next sync cycle will try again.
+      if (srcSnap === null || tgtSnap === null) {
+        log(`buildInitialSnapshots: one side unreachable (null) — skipping init`);
+        return;
+      }
       // 合并两个快照用于增量检测
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
       log(`initial snapshots: source=${srcSnap.size}, target=${tgtSnap.size}`);
     } else {
-      this.sourceSnapshots = await buildSnapshot(
+      const snap = await buildSnapshot(
         this.source,
         this.root,
         this.options.filter,
       );
-      log(`initial snapshots: source=${this.sourceSnapshots.size}`);
+      if (snap !== null) {
+        this.sourceSnapshots = snap;
+        log(`initial snapshots: source=${snap.size}`);
+      } else {
+        log(`buildInitialSnapshots: source unreachable (null) — skipping init`);
+      }
     }
   }
 }
