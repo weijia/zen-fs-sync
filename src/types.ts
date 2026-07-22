@@ -36,6 +36,8 @@ export interface SyncableFS {
   stat(path: string): Promise<FileStat>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   exists(path: string): Promise<boolean>;
+  /** Optional: human-readable backend name for logging (e.g. 'RemoteStorage@5apps') */
+  backendName?: string;
 }
 
 // ---------------------------------------------------------------------------

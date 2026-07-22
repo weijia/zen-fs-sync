@@ -82,7 +82,7 @@ export class SyncPair {
     this.detector = new IncrementalDetector();
     this.resolver = new DefaultConflictResolver();
 
-    log(`pair ${this.pairId} created: root=${this.root} dir=${this.options.direction}`);
+    log(`pair ${this.pairId} created: root=${this.root} dir=${this.options.direction} source=${source.backendName || '?'} target=${target.backendName || '?'}`);
   }
 
   // -----------------------------------------------------------------------

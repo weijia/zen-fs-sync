@@ -176,13 +176,14 @@ export async function buildSnapshot(
   filter?: SyncFilter,
 ): Promise<Map<string, FileSnapshot> | null> {
   const normalizedRoot = normalizePath(root);
-  console.log(`[zen-fs-sync] buildSnapshot: root=${root}, normalizedRoot=${normalizedRoot}`);
+  const fsName = fs.backendName || 'unknown';
+  console.log(`[zen-fs-sync] buildSnapshot: backend=${fsName}, root=${root}`);
 
   // Guard: if root readdir fails, the FS is unreachable — return null
   // so callers can skip this sync cycle instead of treating it as empty.
   try {
     const rootEntries = await fs.readdir(normalizedRoot);
-    console.log(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) → ${rootEntries.length} entries: [${rootEntries.join(', ')}]`);
+    console.log(`[zen-fs-sync] buildSnapshot(${fsName}): readdir(${normalizedRoot}) → ${rootEntries.length} entries: [${rootEntries.join(', ')}]`);
 
     // For each entry, stat it to see if it's a dir or file
     for (const entry of rootEntries) {
@@ -190,27 +191,27 @@ export async function buildSnapshot(
       try {
         const stat = await fs.stat(fullPath);
         const type = stat.isDirectory() ? 'DIR' : stat.isFile() ? 'FILE' : 'OTHER';
-        console.log(`[zen-fs-sync] buildSnapshot:   ${type} ${entry} (fullPath=${fullPath})`);
+        console.log(`[zen-fs-sync] buildSnapshot(${fsName}):   ${type} ${entry} (path=${fullPath})`);
         if (stat.isDirectory()) {
           try {
             const subEntries = await fs.readdir(fullPath);
-            console.log(`[zen-fs-sync] buildSnapshot:     readdir(${fullPath}) → [${subEntries.join(', ')}]`);
+            console.log(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) → [${subEntries.join(', ')}]`);
           } catch (err: any) {
-            console.warn(`[zen-fs-sync] buildSnapshot:     readdir(${fullPath}) FAILED:`, err.message || err);
+            console.warn(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) FAILED:`, err.message || err);
           }
         }
       } catch (err: any) {
-        console.warn(`[zen-fs-sync] buildSnapshot:   stat(${fullPath}) FAILED:`, err.message || err);
+        console.warn(`[zen-fs-sync] buildSnapshot(${fsName}):   stat(${fullPath}) FAILED:`, err.message || err);
       }
     }
   } catch (err: any) {
-    console.warn(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) FAILED:`, err.message || err);
-    console.warn(`[zen-fs-sync] buildSnapshot: ABORTING — returning null to prevent false deletions`);
+    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): readdir(${normalizedRoot}) FAILED:`, err.message || err);
+    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): ABORTING — returning null to prevent false deletions`);
     return null;
   }
 
   const files = await walkFiles(fs, root, filter);
-  console.log(`[zen-fs-sync] buildSnapshot: walkFiles returned ${files.length} files: [${files.join(', ')}]`);
+  console.log(`[zen-fs-sync] buildSnapshot(${fsName}): walkFiles returned ${files.length} files: [${files.join(', ')}]`);
   const snapshot = new Map<string, FileSnapshot>();
 
   for (const relPath of files) {
@@ -227,7 +228,7 @@ export async function buildSnapshot(
     }
   }
 
-  console.log(`[zen-fs-sync] buildSnapshot: done, ${snapshot.size} entries`);
+  console.log(`[zen-fs-sync] buildSnapshot(${fsName}): done, ${snapshot.size} entries`);
   return snapshot;
 }
 
