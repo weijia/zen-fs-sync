@@ -83,16 +83,14 @@ export class MockFS implements SyncableFS {
     const file = this.files.get(path);
     if (file) {
       return {
-        isFile: () => true,
-        isDirectory: () => false,
+        mode: 0o100644,
         size: file.content.length,
         mtimeMs: file.mtimeMs,
       };
     }
     if (this.dirs.has(path)) {
       return {
-        isFile: () => false,
-        isDirectory: () => true,
+        mode: 0o040755,
         size: 0,
         mtimeMs: 0,
       };
