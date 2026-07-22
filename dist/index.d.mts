@@ -5,15 +5,19 @@
  */
 /**
  * 文件元信息的最小接口。
- * ZenFS 的 stat 返回 InodeLike，Node.js 的 stat 返回 Stats，
- * 这里取两者交集，保持通用。
+ * ZenFS 的 stat 返回 InodeLike（有 mode），Node.js 的 stat 返回 Stats（有 isFile/isDirectory），
+ * 这里统一用 mode 判断类型，不再要求 isFile/isDirectory 方法。
  */
 interface FileStat {
-    isFile(): boolean;
-    isDirectory(): boolean;
+    /** Unix mode（e.g. 0o100644 = 文件, 0o040755 = 目录）。优先用 mode 判断类型 */
+    mode?: number;
     size: number;
     mtimeMs: number;
 }
+/** 通过 mode 判断是否为目录 */
+declare function isDirectory(stat: FileStat): boolean;
+/** 通过 mode 判断是否为普通文件 */
+declare function isFile(stat: FileStat): boolean;
 /**
  * 可同步文件系统的最小接口。
  *
@@ -32,6 +36,8 @@ interface SyncableFS {
         recursive?: boolean;
     }): Promise<void>;
     exists(path: string): Promise<boolean>;
+    /** Optional: human-readable backend name for logging (e.g. 'RemoteStorage@5apps') */
+    backendName?: string;
 }
 /** 某个文件在某一时刻的状态快照 */
 interface FileSnapshot {
@@ -383,4 +389,4 @@ declare class DefaultConflictResolver implements ConflictResolver {
     }>;
 }
 
-export { type ChangeDetector, type ChangeEntry, ChangeType, type ConflictEntry, type ConflictResolver, ConflictStrategy, DefaultConflictResolver, type FileSnapshot, type FileStat, FullDetector, IncrementalDetector, type ResolvedSyncOptions, SyncDirection, type SyncEvent, type SyncEventHandler, type SyncEventType, type SyncFilter, type SyncOptions, SyncPair, SyncPairState, type SyncPairStatus, type SyncResult, type SyncableFS, ZenFSSync, createLogger, isDebugEnabled, setDebug };
+export { type ChangeDetector, type ChangeEntry, ChangeType, type ConflictEntry, type ConflictResolver, ConflictStrategy, DefaultConflictResolver, type FileSnapshot, type FileStat, FullDetector, IncrementalDetector, type ResolvedSyncOptions, SyncDirection, type SyncEvent, type SyncEventHandler, type SyncEventType, type SyncFilter, type SyncOptions, SyncPair, SyncPairState, type SyncPairStatus, type SyncResult, type SyncableFS, ZenFSSync, createLogger, isDebugEnabled, isDirectory, isFile, setDebug };

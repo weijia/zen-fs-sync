@@ -10,14 +10,24 @@
 
 /**
  * 文件元信息的最小接口。
- * ZenFS 的 stat 返回 InodeLike，Node.js 的 stat 返回 Stats，
- * 这里取两者交集，保持通用。
+ * ZenFS 的 stat 返回 InodeLike（有 mode），Node.js 的 stat 返回 Stats（有 isFile/isDirectory），
+ * 这里统一用 mode 判断类型，不再要求 isFile/isDirectory 方法。
  */
 export interface FileStat {
-  isFile(): boolean;
-  isDirectory(): boolean;
+  /** Unix mode（e.g. 0o100644 = 文件, 0o040755 = 目录）。优先用 mode 判断类型 */
+  mode?: number;
   size: number;
   mtimeMs: number;
+}
+
+/** 通过 mode 判断是否为目录 */
+export function isDirectory(stat: FileStat): boolean {
+  return stat.mode !== undefined && (stat.mode & 0o40000) === 0o40000;
+}
+
+/** 通过 mode 判断是否为普通文件 */
+export function isFile(stat: FileStat): boolean {
+  return stat.mode !== undefined && (stat.mode & 0o100000) === 0o100000;
 }
 
 /**

@@ -31,11 +31,19 @@ __export(index_exports, {
   ZenFSSync: () => ZenFSSync,
   createLogger: () => createLogger,
   isDebugEnabled: () => isDebugEnabled,
+  isDirectory: () => isDirectory,
+  isFile: () => isFile,
   setDebug: () => setDebug
 });
 module.exports = __toCommonJS(index_exports);
 
 // src/types.ts
+function isDirectory(stat) {
+  return stat.mode !== void 0 && (stat.mode & 16384) === 16384;
+}
+function isFile(stat) {
+  return stat.mode !== void 0 && (stat.mode & 32768) === 32768;
+}
 var ChangeType = /* @__PURE__ */ ((ChangeType2) => {
   ChangeType2["Created"] = "created";
   ChangeType2["Modified"] = "modified";
@@ -163,10 +171,10 @@ async function walkFiles(fs, root, filter) {
         console.warn(`[zen-fs-sync] walkFiles stat FAILED on ${fullPath}:`, err.message || err);
         continue;
       }
-      if (stat.isDirectory()) {
+      if (isDirectory(stat)) {
         console.log(`[zen-fs-sync] walkFiles   \u2192 directory ${fullPath}`);
         await visit(fullPath);
-      } else if (stat.isFile()) {
+      } else if (isFile(stat)) {
         console.log(`[zen-fs-sync] walkFiles   \u2192 file ${fullPath}`);
         if (!isPathAllowed(relPath, filter)) {
           console.log(`[zen-fs-sync] walkFiles   \u2192 excluded by filter: ${relPath}`);
@@ -184,35 +192,36 @@ async function walkFiles(fs, root, filter) {
 }
 async function buildSnapshot(fs, root, filter) {
   const normalizedRoot = normalizePath(root);
-  console.log(`[zen-fs-sync] buildSnapshot: root=${root}, normalizedRoot=${normalizedRoot}`);
+  const fsName = fs.backendName || "unknown";
+  console.log(`[zen-fs-sync] buildSnapshot: backend=${fsName}, root=${root}`);
   try {
     const rootEntries = await fs.readdir(normalizedRoot);
-    console.log(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) \u2192 ${rootEntries.length} entries: [${rootEntries.join(", ")}]`);
+    console.log(`[zen-fs-sync] buildSnapshot(${fsName}): readdir(${normalizedRoot}) \u2192 ${rootEntries.length} entries: [${rootEntries.join(", ")}]`);
     for (const entry of rootEntries) {
       const fullPath = resolvePath(normalizedRoot, entry);
       try {
         const stat = await fs.stat(fullPath);
-        const type = stat.isDirectory() ? "DIR" : stat.isFile() ? "FILE" : "OTHER";
-        console.log(`[zen-fs-sync] buildSnapshot:   ${type} ${entry} (fullPath=${fullPath})`);
-        if (stat.isDirectory()) {
+        const type = isDirectory(stat) ? "DIR" : isFile(stat) ? "FILE" : "OTHER";
+        console.log(`[zen-fs-sync] buildSnapshot(${fsName}):   ${type} ${entry} (path=${fullPath})`);
+        if (isDirectory(stat)) {
           try {
             const subEntries = await fs.readdir(fullPath);
-            console.log(`[zen-fs-sync] buildSnapshot:     readdir(${fullPath}) \u2192 [${subEntries.join(", ")}]`);
+            console.log(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) \u2192 [${subEntries.join(", ")}]`);
           } catch (err) {
-            console.warn(`[zen-fs-sync] buildSnapshot:     readdir(${fullPath}) FAILED:`, err.message || err);
+            console.warn(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) FAILED:`, err.message || err);
           }
         }
       } catch (err) {
-        console.warn(`[zen-fs-sync] buildSnapshot:   stat(${fullPath}) FAILED:`, err.message || err);
+        console.warn(`[zen-fs-sync] buildSnapshot(${fsName}):   stat(${fullPath}) FAILED:`, err.message || err);
       }
     }
   } catch (err) {
-    console.warn(`[zen-fs-sync] buildSnapshot: readdir(${normalizedRoot}) FAILED:`, err.message || err);
-    console.warn(`[zen-fs-sync] buildSnapshot: ABORTING \u2014 returning null to prevent false deletions`);
+    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): readdir(${normalizedRoot}) FAILED:`, err.message || err);
+    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): ABORTING \u2014 returning null to prevent false deletions`);
     return null;
   }
   const files = await walkFiles(fs, root, filter);
-  console.log(`[zen-fs-sync] buildSnapshot: walkFiles returned ${files.length} files: [${files.join(", ")}]`);
+  console.log(`[zen-fs-sync] buildSnapshot(${fsName}): walkFiles returned ${files.length} files: [${files.join(", ")}]`);
   const snapshot = /* @__PURE__ */ new Map();
   for (const relPath of files) {
     const fullPath = resolvePath(normalizedRoot, relPath);
@@ -226,7 +235,7 @@ async function buildSnapshot(fs, root, filter) {
     } catch {
     }
   }
-  console.log(`[zen-fs-sync] buildSnapshot: done, ${snapshot.size} entries`);
+  console.log(`[zen-fs-sync] buildSnapshot(${fsName}): done, ${snapshot.size} entries`);
   return snapshot;
 }
 async function ensureDir(fs, dirPath) {
@@ -374,7 +383,7 @@ var SyncPair = class {
     };
     this.detector = new IncrementalDetector();
     this.resolver = new DefaultConflictResolver();
-    log3(`pair ${this.pairId} created: root=${this.root} dir=${this.options.direction}`);
+    log3(`pair ${this.pairId} created: root=${this.root} dir=${this.options.direction} source=${source.backendName || "?"} target=${target.backendName || "?"}`);
   }
   syncRoot;
   pairId;
@@ -1008,5 +1017,7 @@ var FullDetector = class {
   ZenFSSync,
   createLogger,
   isDebugEnabled,
+  isDirectory,
+  isFile,
   setDebug
 });

@@ -43,4 +43,6 @@ export {
   SyncDirection,
   SyncPairState,
   SyncEventType,
+  isDirectory,
+  isFile,
 } from './types';

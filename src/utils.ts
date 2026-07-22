@@ -4,6 +4,8 @@
 
 import {
   ChangeType,
+  isDirectory,
+  isFile,
   type FileSnapshot,
   type SyncFilter,
   type SyncableFS,
@@ -140,11 +142,11 @@ export async function walkFiles(
         console.warn(`[zen-fs-sync] walkFiles stat FAILED on ${fullPath}:`, err.message || err);
         continue;
       }
-      if (stat.isDirectory()) {
+      if (isDirectory(stat)) {
         console.log(`[zen-fs-sync] walkFiles   → directory ${fullPath}`);
         // 目录不受 filter 限制，始终进入（子文件可能匹配 filter）
         await visit(fullPath);
-      } else if (stat.isFile()) {
+      } else if (isFile(stat)) {
         console.log(`[zen-fs-sync] walkFiles   → file ${fullPath}`);
         // 只对文件应用路径过滤
         if (!isPathAllowed(relPath, filter)) {
@@ -190,9 +192,9 @@ export async function buildSnapshot(
       const fullPath = resolvePath(normalizedRoot, entry);
       try {
         const stat = await fs.stat(fullPath);
-        const type = stat.isDirectory() ? 'DIR' : stat.isFile() ? 'FILE' : 'OTHER';
+        const type = isDirectory(stat) ? 'DIR' : isFile(stat) ? 'FILE' : 'OTHER';
         console.log(`[zen-fs-sync] buildSnapshot(${fsName}):   ${type} ${entry} (path=${fullPath})`);
-        if (stat.isDirectory()) {
+        if (isDirectory(stat)) {
           try {
             const subEntries = await fs.readdir(fullPath);
             console.log(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) → [${subEntries.join(', ')}]`);
