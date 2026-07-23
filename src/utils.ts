@@ -116,52 +116,36 @@ export async function walkFiles(
   const normalizedRoot = normalizePath(root);
 
   async function visit(dir: string): Promise<void> {
-    console.log(`[zen-fs-sync] walkFiles readdir: ${dir}`);
     let entries: string[];
     try {
       entries = await fs.readdir(dir);
-      console.log(`[zen-fs-sync] walkFiles readdir: ${dir} → ${entries.length} entries: [${entries.join(', ')}]`);
-    } catch (err: any) {
-      console.warn(`[zen-fs-sync] walkFiles readdir FAILED on ${dir}:`, err.message || err);
+    } catch {
       return; // 目录不存在或无权限
     }
 
     for (const entry of entries) {
-      // 跳过 .zenfs-sync 元数据目录，但保留其他以 . 开头的目录（如 .meta）
       if (entry === '.zenfs-sync') continue;
 
       const fullPath = resolvePath(dir, entry);
       let relPath = fullPath.slice(normalizedRoot.length) || '/';
       if (!relPath.startsWith('/')) relPath = '/' + relPath;
 
-      console.log(`[zen-fs-sync] walkFiles stat: ${fullPath}`);
       let stat;
       try {
         stat = await fs.stat(fullPath);
-      } catch (err: any) {
-        console.warn(`[zen-fs-sync] walkFiles stat FAILED on ${fullPath}:`, err.message || err);
+      } catch {
         continue;
       }
       if (isDirectory(stat)) {
-        console.log(`[zen-fs-sync] walkFiles   → directory ${fullPath}`);
-        // 目录不受 filter 限制，始终进入（子文件可能匹配 filter）
         await visit(fullPath);
       } else if (isFile(stat)) {
-        console.log(`[zen-fs-sync] walkFiles   → file ${fullPath}`);
-        // 只对文件应用路径过滤
-        if (!isPathAllowed(relPath, filter)) {
-          console.log(`[zen-fs-sync] walkFiles   → excluded by filter: ${relPath}`);
-          continue;
-        }
+        if (!isPathAllowed(relPath, filter)) continue;
         results.push(relPath);
-      } else {
-        console.log(`[zen-fs-sync] walkFiles   → unknown type ${fullPath}`);
       }
     }
   }
 
   await visit(normalizedRoot);
-  console.log(`[zen-fs-sync] walkFiles(${root}) total: ${results.length} files: [${results.join(', ')}]`);
   return results;
 }
 
@@ -179,41 +163,17 @@ export async function buildSnapshot(
 ): Promise<Map<string, FileSnapshot> | null> {
   const normalizedRoot = normalizePath(root);
   const fsName = fs.backendName || 'unknown';
-  console.log(`[zen-fs-sync] buildSnapshot: backend=${fsName}, root=${root}`);
 
   // Guard: if root readdir fails, the FS is unreachable — return null
   // so callers can skip this sync cycle instead of treating it as empty.
   try {
-    const rootEntries = await fs.readdir(normalizedRoot);
-    console.log(`[zen-fs-sync] buildSnapshot(${fsName}): readdir(${normalizedRoot}) → ${rootEntries.length} entries: [${rootEntries.join(', ')}]`);
-
-    // For each entry, stat it to see if it's a dir or file
-    for (const entry of rootEntries) {
-      const fullPath = resolvePath(normalizedRoot, entry);
-      try {
-        const stat = await fs.stat(fullPath);
-        const type = isDirectory(stat) ? 'DIR' : isFile(stat) ? 'FILE' : 'OTHER';
-        console.log(`[zen-fs-sync] buildSnapshot(${fsName}):   ${type} ${entry} (path=${fullPath})`);
-        if (isDirectory(stat)) {
-          try {
-            const subEntries = await fs.readdir(fullPath);
-            console.log(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) → [${subEntries.join(', ')}]`);
-          } catch (err: any) {
-            console.warn(`[zen-fs-sync] buildSnapshot(${fsName}):     readdir(${fullPath}) FAILED:`, err.message || err);
-          }
-        }
-      } catch (err: any) {
-        console.warn(`[zen-fs-sync] buildSnapshot(${fsName}):   stat(${fullPath}) FAILED:`, err.message || err);
-      }
-    }
-  } catch (err: any) {
-    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): readdir(${normalizedRoot}) FAILED:`, err.message || err);
-    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): ABORTING — returning null to prevent false deletions`);
+    await fs.readdir(normalizedRoot);
+  } catch {
+    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): unreachable, returning null`);
     return null;
   }
 
   const files = await walkFiles(fs, root, filter);
-  console.log(`[zen-fs-sync] buildSnapshot(${fsName}): walkFiles returned ${files.length} files: [${files.join(', ')}]`);
   const snapshot = new Map<string, FileSnapshot>();
 
   for (const relPath of files) {
@@ -230,7 +190,6 @@ export async function buildSnapshot(
     }
   }
 
-  console.log(`[zen-fs-sync] buildSnapshot(${fsName}): done, ${snapshot.size} entries`);
   return snapshot;
 }
 

@@ -97,7 +97,6 @@ export class SyncPair {
       throw new Error(`SyncPair ${this.pairId} has been disposed`);
     }
     if (this.state === SyncPairState.Syncing) {
-      console.log(`[zen-fs-sync] sync SKIP (already syncing) pairId=${this.pairId}`);
       return this.lastResult!;
     }
 
@@ -158,7 +157,6 @@ export class SyncPair {
     if (this.watchers) return; // 已经在 watch
 
     this.state = SyncPairState.Watching;
-    console.log(`[zen-fs-sync] watch START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
     log(`watch:start ${this.pairId} (building initial snapshots...)`);
     this.emit({ type: 'watch:start', pairId: this.pairId, timestamp: Date.now() });
 
@@ -277,7 +275,6 @@ export class SyncPair {
     tgt: SyncableFS,
     directionLabel: string,
   ): Promise<SyncResult> {
-    console.log(`[zen-fs-sync] syncOneWay START direction=${directionLabel} pairId=${this.pairId}`);
     const changes = await this.detector.detect(
       src,
       tgt,
@@ -286,7 +283,9 @@ export class SyncPair {
       this.options.filter,
     );
 
-    console.log(`[zen-fs-sync] syncOneWay DETECTED ${changes.length} changes (${directionLabel}):`, changes.map(c => `${c.type}:${c.path}`));
+    if (changes.length > 0) {
+      console.log(`[zen-fs-sync] syncOneWay START direction=${directionLabel} changes=${changes.length}`);
+    }
 
     // 更新快照 — only if the source is reachable (not null).
     // If buildSnapshot returns null, keep the previous snapshot to avoid
@@ -413,11 +412,9 @@ export class SyncPair {
     // Merge snapshots for next incremental sync cycle
     this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
 
-    // Log file listing from both sides
     const srcPaths = Array.from(srcSnap.keys()).sort();
     const tgtPaths = Array.from(tgtSnap.keys()).sort();
-    console.log(`[zen-fs-sync] BI files on source (${srcPaths.length}): [${srcPaths.join(', ')}]`);
-    console.log(`[zen-fs-sync] BI files on target (${tgtPaths.length}): [${tgtPaths.join(', ')}]`);
+    console.log(`[zen-fs-sync] syncBidirectional comparing source=${srcPaths.length} target=${tgtPaths.length}`);
 
     let filesCreated = 0;
     let filesUpdated = 0;
@@ -543,7 +540,6 @@ export class SyncPair {
 
   private async onPoll(): Promise<void> {
     if (this.state === SyncPairState.Syncing) {
-      console.log(`[zen-fs-sync] onPoll SKIP (already syncing) pairId=${this.pairId}`);
       return;
     }
 
@@ -571,7 +567,6 @@ export class SyncPair {
       }
       // 合并两个快照用于增量检测
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
-      console.log(`[zen-fs-sync] initial snapshots: source=${srcSnap.size} files, target=${tgtSnap.size} files (merged=${this.sourceSnapshots.size})`);
     } else {
       const snap = await buildSnapshot(
         this.source,
@@ -580,7 +575,6 @@ export class SyncPair {
       );
       if (snap !== null) {
         this.sourceSnapshots = snap;
-        console.log(`[zen-fs-sync] initial snapshots: source=${snap.size} files`);
       } else {
         log(`buildInitialSnapshots: source unreachable (null) — skipping init`);
       }
