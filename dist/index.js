@@ -571,10 +571,19 @@ var SyncPair = class {
             }
           }
           try {
-            const content = await src.readFile(srcPath, "utf-8");
-            console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath} (${content.length} chars)`);
+            const srcContent = await src.readFile(srcPath, "utf-8");
+            try {
+              const tgtContent = await tgt.readFile(tgtPath, "utf-8");
+              if (srcContent === tgtContent) {
+                console.log(`[zen-fs-sync] WRITE SKIP (content identical) ${change.path}`);
+                filesSkipped++;
+                break;
+              }
+            } catch {
+            }
+            console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath} (${srcContent.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf("/")));
-            await tgt.writeFile(tgtPath, content);
+            await tgt.writeFile(tgtPath, srcContent);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
@@ -736,9 +745,18 @@ var SyncPair = class {
   // -----------------------------------------------------------------------
   async copyFile(from, to, relPath) {
     const fullPath = resolvePath(this.root, relPath);
-    const content = await from.readFile(fullPath, "utf-8");
+    const srcContent = await from.readFile(fullPath, "utf-8");
+    try {
+      const tgtContent = await to.readFile(fullPath, "utf-8");
+      if (srcContent === tgtContent) {
+        console.log(`[zen-fs-sync] SKIP (content identical) ${relPath}`);
+        return false;
+      }
+    } catch {
+    }
     await ensureDir(to, fullPath.substring(0, fullPath.lastIndexOf("/")));
-    await to.writeFile(fullPath, content);
+    await to.writeFile(fullPath, srcContent);
+    return true;
   }
   async writeFileBoth(relPath, content) {
     const fullPath = resolvePath(this.root, relPath);

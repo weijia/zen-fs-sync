@@ -348,10 +348,21 @@ export class SyncPair {
           }
 
           try {
-            const content = await src.readFile(srcPath, 'utf-8');
-            console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} → ${tgtPath} (${content.length} chars)`);
+            const srcContent = await src.readFile(srcPath, 'utf-8');
+            // Content comparison: skip write if target already has identical content
+            try {
+              const tgtContent = await tgt.readFile(tgtPath, 'utf-8');
+              if (srcContent === tgtContent) {
+                console.log(`[zen-fs-sync] WRITE SKIP (content identical) ${change.path}`);
+                filesSkipped++;
+                break;
+              }
+            } catch {
+              // target doesn't exist — proceed
+            }
+            console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} → ${tgtPath} (${srcContent.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf('/')));
-            await tgt.writeFile(tgtPath, content);
+            await tgt.writeFile(tgtPath, srcContent);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
@@ -523,11 +534,22 @@ export class SyncPair {
   // Helpers
   // -----------------------------------------------------------------------
 
-  private async copyFile(from: SyncableFS, to: SyncableFS, relPath: string): Promise<void> {
+  private async copyFile(from: SyncableFS, to: SyncableFS, relPath: string): Promise<boolean> {
     const fullPath = resolvePath(this.root, relPath);
-    const content = await from.readFile(fullPath, 'utf-8');
+    const srcContent = await from.readFile(fullPath, 'utf-8');
+    // Content comparison: skip write if target already has identical content
+    try {
+      const tgtContent = await to.readFile(fullPath, 'utf-8');
+      if (srcContent === tgtContent) {
+        console.log(`[zen-fs-sync] SKIP (content identical) ${relPath}`);
+        return false; // no write needed
+      }
+    } catch {
+      // target file doesn't exist — proceed with write
+    }
     await ensureDir(to, fullPath.substring(0, fullPath.lastIndexOf('/')));
-    await to.writeFile(fullPath, content);
+    await to.writeFile(fullPath, srcContent);
+    return true; // wrote
   }
 
   private async writeFileBoth(relPath: string, content: string): Promise<void> {
