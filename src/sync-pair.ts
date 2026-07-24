@@ -216,6 +216,8 @@ export class SyncPair {
   getStatus(): SyncPairStatus {
     return {
       pairId: this.pairId,
+      sourceName: (this.source as any).backendName,
+      targetName: (this.target as any).backendName,
       state: this.state,
       lastResult: this.lastResult,
       watching: !!this.watchers,

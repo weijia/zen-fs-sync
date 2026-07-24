@@ -467,6 +467,8 @@ var SyncPair = class {
   getStatus() {
     return {
       pairId: this.pairId,
+      sourceName: this.source.backendName,
+      targetName: this.target.backendName,
       state: this.state,
       lastResult: this.lastResult,
       watching: !!this.watchers,

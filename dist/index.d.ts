@@ -180,6 +180,10 @@ declare enum SyncPairState {
 /** 同步对状态快照 */
 interface SyncPairStatus {
     pairId: string;
+    /** Source backend name (e.g. 'local-idb') */
+    sourceName?: string;
+    /** Target backend name (e.g. 'GitHub(my-repo)') */
+    targetName?: string;
     state: SyncPairState;
     /** 最近一次同步结果 */
     lastResult?: SyncResult;
