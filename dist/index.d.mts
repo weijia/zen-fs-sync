@@ -187,6 +187,8 @@ interface SyncPairStatus {
     state: SyncPairState;
     /** 最近一次同步结果 */
     lastResult?: SyncResult;
+    /** 最近一次检查同步的时间（即使无变更） */
+    lastCheckTime?: number;
     /** 是否正在 watch */
     watching: boolean;
     /** 同步次数累计 */
@@ -227,6 +229,7 @@ declare class SyncPair {
     private readonly resolver;
     private state;
     private lastResult?;
+    private lastCheckTime?;
     private totalSyncs;
     private watchers?;
     private debounceTimer?;

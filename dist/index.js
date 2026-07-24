@@ -359,6 +359,7 @@ var SyncPair = class {
   resolver;
   state = "idle" /* Idle */;
   lastResult;
+  lastCheckTime;
   totalSyncs = 0;
   watchers;
   debounceTimer;
@@ -380,6 +381,7 @@ var SyncPair = class {
     const startTime = Date.now();
     this.state = "syncing" /* Syncing */;
     console.log(`[zen-fs-sync] sync START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
+    this.lastCheckTime = Date.now();
     this.emit({ type: "sync:start", pairId: this.pairId, timestamp: Date.now() });
     try {
       let result;
@@ -471,6 +473,7 @@ var SyncPair = class {
       targetName: this.target.backendName,
       state: this.state,
       lastResult: this.lastResult,
+      lastCheckTime: this.lastCheckTime,
       watching: !!this.watchers,
       totalSyncs: this.totalSyncs
     };

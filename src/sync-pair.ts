@@ -53,6 +53,7 @@ export class SyncPair {
 
   private state: SyncPairState = SyncPairState.Idle;
   private lastResult?: SyncResult;
+  private lastCheckTime?: number;
   private totalSyncs = 0;
   private watchers?: { source: NodeJS.Timer; target: NodeJS.Timer };
   private debounceTimer?: ReturnType<typeof setTimeout>;
@@ -103,6 +104,7 @@ export class SyncPair {
     const startTime = Date.now();
     this.state = SyncPairState.Syncing;
     console.log(`[zen-fs-sync] sync START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
+    this.lastCheckTime = Date.now();
     this.emit({ type: 'sync:start', pairId: this.pairId, timestamp: Date.now() });
 
     try {
@@ -220,6 +222,7 @@ export class SyncPair {
       targetName: (this.target as any).backendName,
       state: this.state,
       lastResult: this.lastResult,
+      lastCheckTime: this.lastCheckTime,
       watching: !!this.watchers,
       totalSyncs: this.totalSyncs,
     };
