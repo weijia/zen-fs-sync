@@ -448,10 +448,14 @@ export class SyncPair {
       if (!srcEntry && tgtEntry) {
         // Only on target → copy to source
         try {
-          await this.copyFile(this.target, this.source, path);
-          filesCreated++;
-          changes.push({ path, type: ChangeType.Created, sourceSnapshot: tgtEntry });
-          console.log(`[zen-fs-sync] COPY target→source ${path}`);
+          const wrote = await this.copyFile(this.target, this.source, path);
+          if (wrote) {
+            filesCreated++;
+            changes.push({ path, type: ChangeType.Created, sourceSnapshot: tgtEntry });
+            console.log(`[zen-fs-sync] COPY target→source ${path}`);
+          } else {
+            filesSkipped++;
+          }
         } catch (err) {
           console.error(`[zen-fs-sync] COPY FAIL target→source ${path}:`, err);
           filesSkipped++;
@@ -459,10 +463,14 @@ export class SyncPair {
       } else if (srcEntry && !tgtEntry) {
         // Only on source → copy to target
         try {
-          await this.copyFile(this.source, this.target, path);
-          filesCreated++;
-          changes.push({ path, type: ChangeType.Created, sourceSnapshot: srcEntry });
-          console.log(`[zen-fs-sync] COPY source→target ${path}`);
+          const wrote = await this.copyFile(this.source, this.target, path);
+          if (wrote) {
+            filesCreated++;
+            changes.push({ path, type: ChangeType.Created, sourceSnapshot: srcEntry });
+            console.log(`[zen-fs-sync] COPY source→target ${path}`);
+          } else {
+            filesSkipped++;
+          }
         } catch (err) {
           console.error(`[zen-fs-sync] COPY FAIL source→target ${path}:`, err);
           filesSkipped++;
@@ -475,20 +483,28 @@ export class SyncPair {
 
         if (srcEntry.mtimeMs > tgtEntry.mtimeMs) {
           try {
-            await this.copyFile(this.source, this.target, path);
-            filesUpdated++;
-            changes.push({ path, type: ChangeType.Modified, sourceSnapshot: srcEntry, targetSnapshot: tgtEntry });
-            console.log(`[zen-fs-sync] UPDATE source→target ${path} (src newer mtime=${srcEntry.mtimeMs} > tgt=${tgtEntry.mtimeMs})`);
+            const wrote = await this.copyFile(this.source, this.target, path);
+            if (wrote) {
+              filesUpdated++;
+              changes.push({ path, type: ChangeType.Modified, sourceSnapshot: srcEntry, targetSnapshot: tgtEntry });
+              console.log(`[zen-fs-sync] UPDATE source→target ${path} (src newer mtime=${srcEntry.mtimeMs} > tgt=${tgtEntry.mtimeMs})`);
+            } else {
+              filesSkipped++;
+            }
           } catch (err) {
             console.error(`[zen-fs-sync] UPDATE FAIL source→target ${path}:`, err);
             filesSkipped++;
           }
         } else if (tgtEntry.mtimeMs > srcEntry.mtimeMs) {
           try {
-            await this.copyFile(this.target, this.source, path);
-            filesUpdated++;
-            changes.push({ path, type: ChangeType.Modified, sourceSnapshot: tgtEntry, targetSnapshot: srcEntry });
-            console.log(`[zen-fs-sync] UPDATE target→source ${path} (tgt newer mtime=${tgtEntry.mtimeMs} > src=${srcEntry.mtimeMs})`);
+            const wrote = await this.copyFile(this.target, this.source, path);
+            if (wrote) {
+              filesUpdated++;
+              changes.push({ path, type: ChangeType.Modified, sourceSnapshot: tgtEntry, targetSnapshot: srcEntry });
+              console.log(`[zen-fs-sync] UPDATE target→source ${path} (tgt newer mtime=${tgtEntry.mtimeMs} > src=${srcEntry.mtimeMs})`);
+            } else {
+              filesSkipped++;
+            }
           } catch (err) {
             console.error(`[zen-fs-sync] UPDATE FAIL target→source ${path}:`, err);
             filesSkipped++;
