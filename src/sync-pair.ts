@@ -76,6 +76,7 @@ export class SyncPair {
       direction: options.direction ?? SyncDirection.OneWay,
       conflictStrategy: options.conflictStrategy ?? ConflictStrategy.SourceWins,
       debounceMs: options.debounceMs ?? 300,
+      pollIntervalMs: options.pollIntervalMs ?? 30 * 60 * 1000, // 30 min
       filter: options.filter,
     };
 
@@ -103,7 +104,6 @@ export class SyncPair {
 
     const startTime = Date.now();
     this.state = SyncPairState.Syncing;
-    console.log(`[zen-fs-sync] sync START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
     this.lastCheckTime = Date.now();
     this.emit({ type: 'sync:start', pairId: this.pairId, timestamp: Date.now() });
 
@@ -121,7 +121,11 @@ export class SyncPair {
       this.totalSyncs++;
       this.state = this.watchers ? SyncPairState.Watching : SyncPairState.Idle;
 
-      console.log(`[zen-fs-sync] sync END pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
+      // Only log when there's actual activity (created/updated/deleted/conflicts)
+      const hasActivity = result.filesCreated > 0 || result.filesUpdated > 0 || result.filesDeleted > 0 || result.conflicts.length > 0;
+      if (hasActivity) {
+        console.log(`[zen-fs-sync] sync pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
+      }
 
       this.emit({
         type: 'sync:end',
@@ -166,7 +170,7 @@ export class SyncPair {
     // This prevents the first poll from firing while snapshots are
     // still undefined (which would trigger a destructive full scan).
     this.buildInitialSnapshots().then(() => {
-      const intervalMs = Math.max(this.options.debounceMs, 500);
+      const intervalMs = this.options.pollIntervalMs;
 
       this.watchers = {
         source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
@@ -181,7 +185,7 @@ export class SyncPair {
       log(`watch:init-snapshots failed ${this.pairId}`, err);
       // Still start polling even if snapshots fail — the next sync() call
       // will re-build snapshots via the full-scan fallback path.
-      const intervalMs = Math.max(this.options.debounceMs, 500);
+      const intervalMs = this.options.pollIntervalMs;
       this.watchers = {
         source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
         target: null as unknown as NodeJS.Timer,
@@ -406,7 +410,6 @@ export class SyncPair {
   }
 
   private async syncBidirectional(): Promise<SyncResult> {
-    console.log(`[zen-fs-sync] syncBidirectional START pairId=${this.pairId} root=${this.root}`);
     const startTime = Date.now();
 
     const [srcSnap, tgtSnap] = await Promise.all([
@@ -425,20 +428,20 @@ export class SyncPair {
       };
     }
 
-    // 快照快速比较：如果两端的快照完全一致，跳过同步
-    if (srcSnap.size === tgtSnap.size) {
-      let identical = true;
-      for (const [path, entry] of srcSnap) {
-        const tgtEntry = tgtSnap.get(path);
-        if (!tgtEntry || entry.mtimeMs !== tgtEntry.mtimeMs || entry.size !== tgtEntry.size) {
-          identical = false;
+    // 快照快速比较：将当前两端合并快照与上次的合并快照比较。
+    // 如果完全一致（路径、mtime、size 都没变），说明两端都没有变化，跳过同步。
+    const currentMerged = new Map<string, FileSnapshot>([...srcSnap, ...tgtSnap]);
+    if (this.sourceSnapshots && this.sourceSnapshots.size === currentMerged.size) {
+      let unchanged = true;
+      for (const [path, entry] of currentMerged) {
+        const prev = this.sourceSnapshots.get(path);
+        if (!prev || prev.mtimeMs !== entry.mtimeMs || prev.size !== entry.size) {
+          unchanged = false;
           break;
         }
       }
-      if (identical) {
-        this.sourceSnapshots = new Map([...srcSnap]);
+      if (unchanged) {
         const durationMs = Date.now() - startTime;
-        console.log(`[zen-fs-sync] syncBidirectional SKIP (snapshots identical) pairId=${this.pairId} ${durationMs}ms`);
         return {
           pairId: this.pairId,
           direction: SyncDirection.BiDirectional,
@@ -449,8 +452,8 @@ export class SyncPair {
       }
     }
 
-    // Merge snapshots for next incremental sync cycle
-    this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+    // 保存本次合并快照供下次比较
+    this.sourceSnapshots = currentMerged;
 
     const srcPaths = Array.from(srcSnap.keys()).sort();
     const tgtPaths = Array.from(tgtSnap.keys()).sort();
@@ -607,6 +610,22 @@ export class SyncPair {
   private async onPoll(): Promise<void> {
     if (this.state === SyncPairState.Syncing) {
       return;
+    }
+
+    // Lightweight change check: if either side supports checkForUpdates(),
+    // call it BEFORE doing a full sync. If both return false, skip entirely.
+    try {
+      const [srcChanged, tgtChanged] = await Promise.all([
+        this.source.checkForUpdates ? this.source.checkForUpdates() : Promise.resolve(true),
+        this.target.checkForUpdates ? this.target.checkForUpdates() : Promise.resolve(true),
+      ]);
+      if (!srcChanged && !tgtChanged) {
+        // No changes detected — skip sync entirely
+        this.lastCheckTime = Date.now();
+        return;
+      }
+    } catch {
+      // checkForUpdates failed — proceed with sync as fallback
     }
 
     // 防抖

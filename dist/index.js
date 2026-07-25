@@ -343,6 +343,8 @@ var SyncPair = class {
       direction: options.direction ?? "one-way" /* OneWay */,
       conflictStrategy: options.conflictStrategy ?? "source-wins" /* SourceWins */,
       debounceMs: options.debounceMs ?? 300,
+      pollIntervalMs: options.pollIntervalMs ?? 30 * 60 * 1e3,
+      // 30 min
       filter: options.filter
     };
     this.detector = new IncrementalDetector();
@@ -380,7 +382,6 @@ var SyncPair = class {
     }
     const startTime = Date.now();
     this.state = "syncing" /* Syncing */;
-    console.log(`[zen-fs-sync] sync START pairId=${this.pairId} direction=${this.options.direction} root=${this.root}`);
     this.lastCheckTime = Date.now();
     this.emit({ type: "sync:start", pairId: this.pairId, timestamp: Date.now() });
     try {
@@ -394,7 +395,10 @@ var SyncPair = class {
       this.lastResult = result;
       this.totalSyncs++;
       this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
-      console.log(`[zen-fs-sync] sync END pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
+      const hasActivity = result.filesCreated > 0 || result.filesUpdated > 0 || result.filesDeleted > 0 || result.conflicts.length > 0;
+      if (hasActivity) {
+        console.log(`[zen-fs-sync] sync pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
+      }
       this.emit({
         type: "sync:end",
         pairId: this.pairId,
@@ -430,7 +434,7 @@ var SyncPair = class {
     log3(`watch:start ${this.pairId} (building initial snapshots...)`);
     this.emit({ type: "watch:start", pairId: this.pairId, timestamp: Date.now() });
     this.buildInitialSnapshots().then(() => {
-      const intervalMs = Math.max(this.options.debounceMs, 500);
+      const intervalMs = this.options.pollIntervalMs;
       this.watchers = {
         source: setInterval(() => this.onPoll(), intervalMs),
         target: this.options.direction === "bi-directional" /* BiDirectional */ ? setInterval(() => this.onPoll(), intervalMs) : null
@@ -438,7 +442,7 @@ var SyncPair = class {
       log3(`watch:start ${this.pairId} interval=${intervalMs}ms (snapshots ready)`);
     }).catch((err) => {
       log3(`watch:init-snapshots failed ${this.pairId}`, err);
-      const intervalMs = Math.max(this.options.debounceMs, 500);
+      const intervalMs = this.options.pollIntervalMs;
       this.watchers = {
         source: setInterval(() => this.onPoll(), intervalMs),
         target: null
@@ -625,7 +629,6 @@ var SyncPair = class {
     };
   }
   async syncBidirectional() {
-    console.log(`[zen-fs-sync] syncBidirectional START pairId=${this.pairId} root=${this.root}`);
     const startTime = Date.now();
     const [srcSnap, tgtSnap] = await Promise.all([
       buildSnapshot(this.source, this.root, this.options.filter),
@@ -646,19 +649,18 @@ var SyncPair = class {
         durationMs: Date.now() - startTime
       };
     }
-    if (srcSnap.size === tgtSnap.size) {
-      let identical = true;
-      for (const [path, entry] of srcSnap) {
-        const tgtEntry = tgtSnap.get(path);
-        if (!tgtEntry || entry.mtimeMs !== tgtEntry.mtimeMs || entry.size !== tgtEntry.size) {
-          identical = false;
+    const currentMerged = new Map([...srcSnap, ...tgtSnap]);
+    if (this.sourceSnapshots && this.sourceSnapshots.size === currentMerged.size) {
+      let unchanged = true;
+      for (const [path, entry] of currentMerged) {
+        const prev = this.sourceSnapshots.get(path);
+        if (!prev || prev.mtimeMs !== entry.mtimeMs || prev.size !== entry.size) {
+          unchanged = false;
           break;
         }
       }
-      if (identical) {
-        this.sourceSnapshots = new Map([...srcSnap]);
+      if (unchanged) {
         const durationMs2 = Date.now() - startTime;
-        console.log(`[zen-fs-sync] syncBidirectional SKIP (snapshots identical) pairId=${this.pairId} ${durationMs2}ms`);
         return {
           pairId: this.pairId,
           direction: "bi-directional" /* BiDirectional */,
@@ -673,7 +675,7 @@ var SyncPair = class {
         };
       }
     }
-    this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+    this.sourceSnapshots = currentMerged;
     const srcPaths = Array.from(srcSnap.keys()).sort();
     const tgtPaths = Array.from(tgtSnap.keys()).sort();
     console.log(`[zen-fs-sync] syncBidirectional comparing source=${srcPaths.length} target=${tgtPaths.length}`);
@@ -815,6 +817,17 @@ var SyncPair = class {
   async onPoll() {
     if (this.state === "syncing" /* Syncing */) {
       return;
+    }
+    try {
+      const [srcChanged, tgtChanged] = await Promise.all([
+        this.source.checkForUpdates ? this.source.checkForUpdates() : Promise.resolve(true),
+        this.target.checkForUpdates ? this.target.checkForUpdates() : Promise.resolve(true)
+      ]);
+      if (!srcChanged && !tgtChanged) {
+        this.lastCheckTime = Date.now();
+        return;
+      }
+    } catch {
     }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);

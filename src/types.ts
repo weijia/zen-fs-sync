@@ -48,6 +48,18 @@ export interface SyncableFS {
   exists(path: string): Promise<boolean>;
   /** Optional: human-readable backend name for logging (e.g. 'RemoteStorage@5apps') */
   backendName?: string;
+  /**
+   * Optional: lightweight remote change check.
+   *
+   * Called by the sync engine's poll loop BEFORE doing a full snapshot.
+   * If this returns `false`, the sync is skipped entirely (no directory
+   * walk, no per-file stat).  If `true`, a normal sync proceeds.
+   *
+   * Implementations should be cheap (e.g. one HTTP request to check a
+   * branch HEAD SHA or an ETag).  If not implemented, the sync engine
+   * falls back to full snapshot comparison.
+   */
+  checkForUpdates?(): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +192,8 @@ export interface SyncOptions {
   filter?: SyncFilter;
   /** watch 模式下的防抖间隔（ms），默认 300 */
   debounceMs?: number;
+  /** watch 模式下的轮询间隔（ms），默认 1800000（30 分钟） */
+  pollIntervalMs?: number;
 }
 
 /** 同步对的内部配置（所有字段已填充默认值） */
@@ -188,6 +202,7 @@ export interface ResolvedSyncOptions {
   conflictStrategy: ConflictStrategy;
   filter?: SyncFilter;
   debounceMs: number;
+  pollIntervalMs: number;
 }
 
 // ---------------------------------------------------------------------------
