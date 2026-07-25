@@ -425,6 +425,30 @@ export class SyncPair {
       };
     }
 
+    // 快照快速比较：如果两端的快照完全一致，跳过同步
+    if (srcSnap.size === tgtSnap.size) {
+      let identical = true;
+      for (const [path, entry] of srcSnap) {
+        const tgtEntry = tgtSnap.get(path);
+        if (!tgtEntry || entry.mtimeMs !== tgtEntry.mtimeMs || entry.size !== tgtEntry.size) {
+          identical = false;
+          break;
+        }
+      }
+      if (identical) {
+        this.sourceSnapshots = new Map([...srcSnap]);
+        const durationMs = Date.now() - startTime;
+        console.log(`[zen-fs-sync] syncBidirectional SKIP (snapshots identical) pairId=${this.pairId} ${durationMs}ms`);
+        return {
+          pairId: this.pairId,
+          direction: SyncDirection.BiDirectional,
+          timestamp: Date.now(),
+          filesCreated: 0, filesUpdated: 0, filesDeleted: 0, filesSkipped: 0,
+          conflicts: [], changes: [], durationMs,
+        };
+      }
+    }
+
     // Merge snapshots for next incremental sync cycle
     this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
 
@@ -562,7 +586,6 @@ export class SyncPair {
     try {
       const tgtContent = await to.readFile(fullPath, 'utf-8');
       if (srcContent === tgtContent) {
-        console.log(`[zen-fs-sync] SKIP (content identical) ${relPath}`);
         return false; // no write needed
       }
     } catch {

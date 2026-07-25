@@ -646,6 +646,33 @@ var SyncPair = class {
         durationMs: Date.now() - startTime
       };
     }
+    if (srcSnap.size === tgtSnap.size) {
+      let identical = true;
+      for (const [path, entry] of srcSnap) {
+        const tgtEntry = tgtSnap.get(path);
+        if (!tgtEntry || entry.mtimeMs !== tgtEntry.mtimeMs || entry.size !== tgtEntry.size) {
+          identical = false;
+          break;
+        }
+      }
+      if (identical) {
+        this.sourceSnapshots = new Map([...srcSnap]);
+        const durationMs2 = Date.now() - startTime;
+        console.log(`[zen-fs-sync] syncBidirectional SKIP (snapshots identical) pairId=${this.pairId} ${durationMs2}ms`);
+        return {
+          pairId: this.pairId,
+          direction: "bi-directional" /* BiDirectional */,
+          timestamp: Date.now(),
+          filesCreated: 0,
+          filesUpdated: 0,
+          filesDeleted: 0,
+          filesSkipped: 0,
+          conflicts: [],
+          changes: [],
+          durationMs: durationMs2
+        };
+      }
+    }
     this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
     const srcPaths = Array.from(srcSnap.keys()).sort();
     const tgtPaths = Array.from(tgtSnap.keys()).sort();
@@ -770,7 +797,6 @@ var SyncPair = class {
     try {
       const tgtContent = await to.readFile(fullPath, "utf-8");
       if (srcContent === tgtContent) {
-        console.log(`[zen-fs-sync] SKIP (content identical) ${relPath}`);
         return false;
       }
     } catch {
