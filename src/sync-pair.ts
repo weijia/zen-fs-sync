@@ -55,7 +55,8 @@ export class SyncPair {
   private lastResult?: SyncResult;
   private lastCheckTime?: number;
   private totalSyncs = 0;
-  private watchers?: { source: NodeJS.Timer; target: NodeJS.Timer };
+  // 轮询定时器列表（远程 shouldSync 轮询，或两端都不支持变更检测时的兜底轮询）
+  private pollTimers: NodeJS.Timer[] = [];
   private debounceTimer?: ReturnType<typeof setTimeout>;
   private listeners = new Map<SyncEventType, Set<SyncEventHandler>>();
   private sourceSnapshots?: Map<string, FileSnapshot>;
@@ -119,7 +120,8 @@ export class SyncPair {
       result.durationMs = Date.now() - startTime;
       this.lastResult = result;
       this.totalSyncs++;
-      this.state = this.watchers ? SyncPairState.Watching : SyncPairState.Idle;
+      // 有轮询定时器则保持 Watching，否则回到 Idle
+      this.state = this.pollTimers.length > 0 ? SyncPairState.Watching : SyncPairState.Idle;
 
       // Only log when there's actual activity (created/updated/deleted/conflicts)
       const hasActivity = result.filesCreated > 0 || result.filesUpdated > 0 || result.filesDeleted > 0 || result.conflicts.length > 0;
@@ -136,7 +138,8 @@ export class SyncPair {
 
       return result;
     } catch (error) {
-      this.state = this.watchers ? SyncPairState.Watching : SyncPairState.Idle;
+      // 有轮询定时器则保持 Watching，否则回到 Idle
+      this.state = this.pollTimers.length > 0 ? SyncPairState.Watching : SyncPairState.Idle;
       console.error(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
       this.emit({
         type: 'sync:error',
@@ -154,42 +157,53 @@ export class SyncPair {
 
   /**
    * 启动自动监听同步。
-   * 使用轮询检测变更，防抖触发同步。
+   *
+   * 混合模式：
+   * - 本地端通过 onChange 回调主动推送变更（防抖触发同步）
+   * - 远程端通过定时轮询 shouldSync 检测外部变更
+   * - 兜底：两端都不支持 onChange 也不支持 shouldSync 时，退化为传统轮询
    */
   watch(): void {
     if (this.state === SyncPairState.Disposed) {
       throw new Error(`SyncPair ${this.pairId} has been disposed`);
     }
-    if (this.watchers) return; // 已经在 watch
+    // 已经在 watch（处于 Watching 状态或已有轮询定时器），直接返回
+    if (this.state === SyncPairState.Watching || this.pollTimers.length > 0) return;
 
     this.state = SyncPairState.Watching;
-    log(`watch:start ${this.pairId} (building initial snapshots...)`);
+    log(`watch:start ${this.pairId}`);
     this.emit({ type: 'watch:start', pairId: this.pairId, timestamp: Date.now() });
 
-    // Build initial snapshots BEFORE starting the poll timers.
-    // This prevents the first poll from firing while snapshots are
-    // still undefined (which would trigger a destructive full scan).
+    // 注册 onChange 回调（本地端通过回调主动推送变更）
+    this.source.onChange?.(() => this.onLocalChange());
+    this.target.onChange?.(() => this.onLocalChange());
+
+    // 远程端轮询 shouldSync（只有实现了 shouldSync 的端才轮询）
     this.buildInitialSnapshots().then(() => {
       const intervalMs = this.options.pollIntervalMs;
+      const timers: NodeJS.Timer[] = [];
 
-      this.watchers = {
-        source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
-        target:
-          this.options.direction === SyncDirection.BiDirectional
-            ? (setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer)
-            : (null as unknown as NodeJS.Timer),
-      };
+      if (this.source.shouldSync) {
+        timers.push(setInterval(() => this.onRemotePoll(), intervalMs) as unknown as NodeJS.Timer);
+      }
+      if (this.target.shouldSync) {
+        timers.push(setInterval(() => this.onRemotePoll(), intervalMs) as unknown as NodeJS.Timer);
+      }
 
-      log(`watch:start ${this.pairId} interval=${intervalMs}ms (snapshots ready)`);
+      // 兜底：如果两端都不支持 shouldSync 也不支持 onChange，用传统轮询
+      if (timers.length === 0 && !this.source.onChange && !this.target.onChange) {
+        timers.push(setInterval(() => this.onLocalChange(), intervalMs) as unknown as NodeJS.Timer);
+      }
+
+      this.pollTimers = timers;
+
+      log(
+        `watch:start ${this.pairId} interval=${intervalMs}ms ` +
+          `onChange=[src=${!!this.source.onChange}, tgt=${!!this.target.onChange}] ` +
+          `shouldSync=[src=${!!this.source.shouldSync}, tgt=${!!this.target.shouldSync}]`,
+      );
     }).catch((err) => {
       log(`watch:init-snapshots failed ${this.pairId}`, err);
-      // Still start polling even if snapshots fail — the next sync() call
-      // will re-build snapshots via the full-scan fallback path.
-      const intervalMs = this.options.pollIntervalMs;
-      this.watchers = {
-        source: setInterval(() => this.onPoll(), intervalMs) as unknown as NodeJS.Timer,
-        target: null as unknown as NodeJS.Timer,
-      };
     });
   }
 
@@ -197,13 +211,13 @@ export class SyncPair {
    * 停止自动监听。
    */
   unwatch(): void {
-    if (!this.watchers) return;
+    // 清理所有轮询定时器
+    if (this.pollTimers.length === 0) return;
 
-    clearInterval(this.watchers.source as unknown as number);
-    if (this.watchers.target) {
-      clearInterval(this.watchers.target as unknown as number);
+    for (const timer of this.pollTimers) {
+      clearInterval(timer as unknown as number);
     }
-    this.watchers = undefined;
+    this.pollTimers = [];
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
@@ -227,7 +241,8 @@ export class SyncPair {
       state: this.state,
       lastResult: this.lastResult,
       lastCheckTime: this.lastCheckTime,
-      watching: !!this.watchers,
+      // 是否正在 watch：有轮询定时器或处于 Watching 状态
+      watching: this.pollTimers.length > 0 || this.state === SyncPairState.Watching,
       totalSyncs: this.totalSyncs,
     };
   }
@@ -607,31 +622,47 @@ export class SyncPair {
     await this.target.writeFile(fullPath, content);
   }
 
-  private async onPoll(): Promise<void> {
-    if (this.state === SyncPairState.Syncing) {
-      return;
-    }
+  /**
+   * 本地变更回调（由实现了 onChange 的后端在 writeFile/unlink 后触发）。
+   * 仅做防抖调度，不直接同步。
+   */
+  private onLocalChange(): void {
+    this.scheduleSync();
+  }
 
-    // Lightweight change check: if either side supports checkForUpdates(),
-    // call it BEFORE doing a full sync. If both return false, skip entirely.
+  /**
+   * 远程轮询：检查所有实现了 shouldSync 的端是否有外部变更。
+   * 只要任一端返回 true 就触发同步；shouldSync 调用失败则兜底触发同步。
+   */
+  private async onRemotePoll(): Promise<void> {
+    if (this.state === SyncPairState.Syncing) return;
+
+    // 检查所有实现了 shouldSync 的端
+    const checks: Promise<boolean>[] = [];
+    if (this.source.shouldSync) checks.push(this.source.shouldSync());
+    if (this.target.shouldSync) checks.push(this.target.shouldSync());
+
+    if (checks.length === 0) return;
+
     try {
-      const [srcChanged, tgtChanged] = await Promise.all([
-        this.source.checkForUpdates ? this.source.checkForUpdates() : Promise.resolve(true),
-        this.target.checkForUpdates ? this.target.checkForUpdates() : Promise.resolve(true),
-      ]);
-      if (!srcChanged && !tgtChanged) {
-        // No changes detected — skip sync entirely
+      const results = await Promise.all(checks);
+      // 只要任一端返回 true 就需要同步
+      if (!results.some(r => r)) {
         this.lastCheckTime = Date.now();
         return;
       }
     } catch {
-      // checkForUpdates failed — proceed with sync as fallback
+      // shouldSync 失败 → 执行同步作为兜底
     }
 
-    // 防抖
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
+    this.scheduleSync();
+  }
+
+  /**
+   * 防抖调度同步：在 debounceMs 内的多次触发只执行一次 sync。
+   */
+  private scheduleSync(): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = undefined;
       this.sync().catch(() => {});

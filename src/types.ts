@@ -48,17 +48,32 @@ export interface SyncableFS {
   exists(path: string): Promise<boolean>;
   /** Optional: human-readable backend name for logging (e.g. 'RemoteStorage@5apps') */
   backendName?: string;
+
   /**
-   * Optional: lightweight remote change check.
+   * Optional: 注册本地变更回调。
    *
-   * Called by the sync engine's poll loop BEFORE doing a full snapshot.
-   * If this returns `false`, the sync is skipped entirely (no directory
-   * walk, no per-file stat).  If `true`, a normal sync proceeds.
+   * 当文件系统自身发生变更（writeFile/unlink）时，后端应调用此回调通知 sync 引擎。
+   * sync 引擎会自行做防抖处理。
    *
-   * Implementations should be cheap (e.g. one HTTP request to check a
-   * branch HEAD SHA or an ETag).  If not implemented, the sync engine
-   * falls back to full snapshot comparison.
+   * 支持 push 的后端（如 IndexedDB、InMemory）应实现此方法。
+   * 不支持的后端（如只读远端）不实现，sync 引擎将通过轮询 shouldSync 来检测。
    */
+  onChange?(callback: () => void): void;
+
+  /**
+   * Optional: 检查远端是否有更新。
+   *
+   * 由远程后端实现。比较自身保存的基准状态与远端实际状态，
+   * 返回 true 表示远端发生了外部变更，需要同步。
+   *
+   * 后端应在每次调用后更新内部基准状态。
+   * 首次调用（无基准）时，应初始化基准并返回 true（需要全量同步）。
+   *
+   * 不实现此方法的后端视为无法检测远端变更，sync 引擎会回退到轮询。
+   */
+  shouldSync?(): Promise<boolean>;
+
+  /** @deprecated Use shouldSync() instead */
   checkForUpdates?(): Promise<boolean>;
 }
 

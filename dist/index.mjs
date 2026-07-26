@@ -324,7 +324,8 @@ var SyncPair = class {
   lastResult;
   lastCheckTime;
   totalSyncs = 0;
-  watchers;
+  // 轮询定时器列表（远程 shouldSync 轮询，或两端都不支持变更检测时的兜底轮询）
+  pollTimers = [];
   debounceTimer;
   listeners = /* @__PURE__ */ new Map();
   sourceSnapshots;
@@ -355,7 +356,7 @@ var SyncPair = class {
       result.durationMs = Date.now() - startTime;
       this.lastResult = result;
       this.totalSyncs++;
-      this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
+      this.state = this.pollTimers.length > 0 ? "watching" /* Watching */ : "idle" /* Idle */;
       const hasActivity = result.filesCreated > 0 || result.filesUpdated > 0 || result.filesDeleted > 0 || result.conflicts.length > 0;
       if (hasActivity) {
         console.log(`[zen-fs-sync] sync pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
@@ -368,7 +369,7 @@ var SyncPair = class {
       });
       return result;
     } catch (error) {
-      this.state = this.watchers ? "watching" /* Watching */ : "idle" /* Idle */;
+      this.state = this.pollTimers.length > 0 ? "watching" /* Watching */ : "idle" /* Idle */;
       console.error(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
       this.emit({
         type: "sync:error",
@@ -384,42 +385,51 @@ var SyncPair = class {
   // -----------------------------------------------------------------------
   /**
    * 启动自动监听同步。
-   * 使用轮询检测变更，防抖触发同步。
+   *
+   * 混合模式：
+   * - 本地端通过 onChange 回调主动推送变更（防抖触发同步）
+   * - 远程端通过定时轮询 shouldSync 检测外部变更
+   * - 兜底：两端都不支持 onChange 也不支持 shouldSync 时，退化为传统轮询
    */
   watch() {
     if (this.state === "disposed" /* Disposed */) {
       throw new Error(`SyncPair ${this.pairId} has been disposed`);
     }
-    if (this.watchers) return;
+    if (this.state === "watching" /* Watching */ || this.pollTimers.length > 0) return;
     this.state = "watching" /* Watching */;
-    log3(`watch:start ${this.pairId} (building initial snapshots...)`);
+    log3(`watch:start ${this.pairId}`);
     this.emit({ type: "watch:start", pairId: this.pairId, timestamp: Date.now() });
+    this.source.onChange?.(() => this.onLocalChange());
+    this.target.onChange?.(() => this.onLocalChange());
     this.buildInitialSnapshots().then(() => {
       const intervalMs = this.options.pollIntervalMs;
-      this.watchers = {
-        source: setInterval(() => this.onPoll(), intervalMs),
-        target: this.options.direction === "bi-directional" /* BiDirectional */ ? setInterval(() => this.onPoll(), intervalMs) : null
-      };
-      log3(`watch:start ${this.pairId} interval=${intervalMs}ms (snapshots ready)`);
+      const timers = [];
+      if (this.source.shouldSync) {
+        timers.push(setInterval(() => this.onRemotePoll(), intervalMs));
+      }
+      if (this.target.shouldSync) {
+        timers.push(setInterval(() => this.onRemotePoll(), intervalMs));
+      }
+      if (timers.length === 0 && !this.source.onChange && !this.target.onChange) {
+        timers.push(setInterval(() => this.onLocalChange(), intervalMs));
+      }
+      this.pollTimers = timers;
+      log3(
+        `watch:start ${this.pairId} interval=${intervalMs}ms onChange=[src=${!!this.source.onChange}, tgt=${!!this.target.onChange}] shouldSync=[src=${!!this.source.shouldSync}, tgt=${!!this.target.shouldSync}]`
+      );
     }).catch((err) => {
       log3(`watch:init-snapshots failed ${this.pairId}`, err);
-      const intervalMs = this.options.pollIntervalMs;
-      this.watchers = {
-        source: setInterval(() => this.onPoll(), intervalMs),
-        target: null
-      };
     });
   }
   /**
    * 停止自动监听。
    */
   unwatch() {
-    if (!this.watchers) return;
-    clearInterval(this.watchers.source);
-    if (this.watchers.target) {
-      clearInterval(this.watchers.target);
+    if (this.pollTimers.length === 0) return;
+    for (const timer of this.pollTimers) {
+      clearInterval(timer);
     }
-    this.watchers = void 0;
+    this.pollTimers = [];
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = void 0;
@@ -439,7 +449,8 @@ var SyncPair = class {
       state: this.state,
       lastResult: this.lastResult,
       lastCheckTime: this.lastCheckTime,
-      watching: !!this.watchers,
+      // 是否正在 watch：有轮询定时器或处于 Watching 状态
+      watching: this.pollTimers.length > 0 || this.state === "watching" /* Watching */,
       totalSyncs: this.totalSyncs
     };
   }
@@ -775,24 +786,38 @@ var SyncPair = class {
     await this.source.writeFile(fullPath, content);
     await this.target.writeFile(fullPath, content);
   }
-  async onPoll() {
-    if (this.state === "syncing" /* Syncing */) {
-      return;
-    }
+  /**
+   * 本地变更回调（由实现了 onChange 的后端在 writeFile/unlink 后触发）。
+   * 仅做防抖调度，不直接同步。
+   */
+  onLocalChange() {
+    this.scheduleSync();
+  }
+  /**
+   * 远程轮询：检查所有实现了 shouldSync 的端是否有外部变更。
+   * 只要任一端返回 true 就触发同步；shouldSync 调用失败则兜底触发同步。
+   */
+  async onRemotePoll() {
+    if (this.state === "syncing" /* Syncing */) return;
+    const checks = [];
+    if (this.source.shouldSync) checks.push(this.source.shouldSync());
+    if (this.target.shouldSync) checks.push(this.target.shouldSync());
+    if (checks.length === 0) return;
     try {
-      const [srcChanged, tgtChanged] = await Promise.all([
-        this.source.checkForUpdates ? this.source.checkForUpdates() : Promise.resolve(true),
-        this.target.checkForUpdates ? this.target.checkForUpdates() : Promise.resolve(true)
-      ]);
-      if (!srcChanged && !tgtChanged) {
+      const results = await Promise.all(checks);
+      if (!results.some((r) => r)) {
         this.lastCheckTime = Date.now();
         return;
       }
     } catch {
     }
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
+    this.scheduleSync();
+  }
+  /**
+   * 防抖调度同步：在 debounceMs 内的多次触发只执行一次 sync。
+   */
+  scheduleSync() {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = void 0;
       this.sync().catch(() => {
