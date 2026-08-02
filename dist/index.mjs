@@ -423,9 +423,15 @@ var SyncPair = class {
   }
   /**
    * 停止自动监听。
+   *
+   * Always clears all state (timers, debounce, snapshots) even if no poll
+   * timers were set yet. This is critical: buildInitialSnapshots() runs
+   * asynchronously inside watch(), and if unwatch() is called before that
+   * async work completes, we must still clear sourceSnapshots so that the
+   * next syncAll() performs a full comparison instead of skipping due to
+   * a stale cached snapshot.
    */
   unwatch() {
-    if (this.pollTimers.length === 0) return;
     for (const timer of this.pollTimers) {
       clearInterval(timer);
     }
@@ -434,9 +440,14 @@ var SyncPair = class {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = void 0;
     }
-    this.state = "idle" /* Idle */;
-    log3(`watch:stop ${this.pairId}`);
-    this.emit({ type: "watch:stop", pairId: this.pairId, timestamp: Date.now() });
+    this.sourceSnapshots = void 0;
+    if (this.state === "watching" /* Watching */) {
+      this.state = "idle" /* Idle */;
+      log3(`watch:stop ${this.pairId}`);
+      this.emit({ type: "watch:stop", pairId: this.pairId, timestamp: Date.now() });
+    } else {
+      this.state = "idle" /* Idle */;
+    }
   }
   // -----------------------------------------------------------------------
   // 状态查询
@@ -834,6 +845,10 @@ var SyncPair = class {
         log3(`buildInitialSnapshots: one side unreachable (null) \u2014 skipping init`);
         return;
       }
+      if (this.state !== "watching" /* Watching */) {
+        log3(`buildInitialSnapshots: state changed to ${this.state} during build \u2014 discarding snapshots`);
+        return;
+      }
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
     } else {
       const snap = await buildSnapshot(
@@ -841,6 +856,10 @@ var SyncPair = class {
         this.root,
         this.options.filter
       );
+      if (this.state !== "watching" /* Watching */) {
+        log3(`buildInitialSnapshots: state changed to ${this.state} during build \u2014 discarding snapshots`);
+        return;
+      }
       if (snap !== null) {
         this.sourceSnapshots = snap;
       } else {

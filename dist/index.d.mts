@@ -278,6 +278,13 @@ declare class SyncPair {
     watch(): void;
     /**
      * 停止自动监听。
+     *
+     * Always clears all state (timers, debounce, snapshots) even if no poll
+     * timers were set yet. This is critical: buildInitialSnapshots() runs
+     * asynchronously inside watch(), and if unwatch() is called before that
+     * async work completes, we must still clear sourceSnapshots so that the
+     * next syncAll() performs a full comparison instead of skipping due to
+     * a stale cached snapshot.
      */
     unwatch(): void;
     getStatus(): SyncPairStatus;

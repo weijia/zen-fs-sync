@@ -209,11 +209,16 @@ export class SyncPair {
 
   /**
    * 停止自动监听。
+   *
+   * Always clears all state (timers, debounce, snapshots) even if no poll
+   * timers were set yet. This is critical: buildInitialSnapshots() runs
+   * asynchronously inside watch(), and if unwatch() is called before that
+   * async work completes, we must still clear sourceSnapshots so that the
+   * next syncAll() performs a full comparison instead of skipping due to
+   * a stale cached snapshot.
    */
   unwatch(): void {
     // 清理所有轮询定时器
-    if (this.pollTimers.length === 0) return;
-
     for (const timer of this.pollTimers) {
       clearInterval(timer as unknown as number);
     }
@@ -224,9 +229,21 @@ export class SyncPair {
       this.debounceTimer = undefined;
     }
 
-    this.state = SyncPairState.Idle;
-    log(`watch:stop ${this.pairId}`);
-    this.emit({ type: 'watch:stop', pairId: this.pairId, timestamp: Date.now() });
+    // Clear cached snapshots so the next sync() does a full comparison.
+    // Without this, buildInitialSnapshots() may have already cached a
+    // merged (source ∪ target) snapshot WITHOUT actually syncing files,
+    // causing syncBidirectional() to see "unchanged" and skip.
+    this.sourceSnapshots = undefined;
+
+    // Only log/emit if we were actually watching (state was Watching or had timers)
+    if (this.state === SyncPairState.Watching) {
+      this.state = SyncPairState.Idle;
+      log(`watch:stop ${this.pairId}`);
+      this.emit({ type: 'watch:stop', pairId: this.pairId, timestamp: Date.now() });
+    } else {
+      // Still set state to Idle in case it was left in an intermediate state
+      this.state = SyncPairState.Idle;
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -681,6 +698,12 @@ export class SyncPair {
         log(`buildInitialSnapshots: one side unreachable (null) — skipping init`);
         return;
       }
+      // Guard: if unwatch() was called while we were building snapshots,
+      // don't cache them. The caller intends to do a fresh sync next.
+      if (this.state !== SyncPairState.Watching) {
+        log(`buildInitialSnapshots: state changed to ${this.state} during build — discarding snapshots`);
+        return;
+      }
       // 合并两个快照用于增量检测
       this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
     } else {
@@ -689,6 +712,11 @@ export class SyncPair {
         this.root,
         this.options.filter,
       );
+      // Guard: same as above
+      if (this.state !== SyncPairState.Watching) {
+        log(`buildInitialSnapshots: state changed to ${this.state} during build — discarding snapshots`);
+        return;
+      }
       if (snap !== null) {
         this.sourceSnapshots = snap;
       } else {
