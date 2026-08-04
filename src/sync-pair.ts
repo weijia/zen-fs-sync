@@ -36,6 +36,7 @@ import {
   generatePairId,
   normalizePath,
   resolvePath,
+  writeFileWithMtimeFallback,
 } from './utils';
 import { createLogger } from './logger';
 
@@ -383,7 +384,13 @@ export class SyncPair {
               else filesUpdated++;
 
               await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf('/')));
-              await tgt.writeFile(tgtPath, resolved.content);
+              // Preserve source mtime when writing resolved content
+              let resolvedMtime: number | undefined;
+              try {
+                const srcStat = await src.stat(srcPath);
+                resolvedMtime = srcStat.mtimeMs;
+              } catch { /* source may be gone */ }
+              await writeFileWithMtimeFallback(tgt, tgtPath, resolved.content, resolvedMtime);
               continue;
             }
           }
@@ -403,7 +410,13 @@ export class SyncPair {
             }
             console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} → ${tgtPath} (${srcContent.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf('/')));
-            await tgt.writeFile(tgtPath, srcContent);
+            // Preserve source mtime when copying
+            let srcMtime: number | undefined;
+            try {
+              const srcStat = await src.stat(srcPath);
+              srcMtime = srcStat.mtimeMs;
+            } catch { /* source may be gone */ }
+            await writeFileWithMtimeFallback(tgt, tgtPath, srcContent, srcMtime);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
@@ -627,7 +640,13 @@ export class SyncPair {
       // target file doesn't exist — proceed with write
     }
     await ensureDir(to, fullPath.substring(0, fullPath.lastIndexOf('/')));
-    await to.writeFile(fullPath, srcContent);
+    // Preserve source mtime when copying
+    let srcMtime: number | undefined;
+    try {
+      const srcStat = await from.stat(fullPath);
+      srcMtime = srcStat.mtimeMs;
+    } catch { /* source may be gone */ }
+    await writeFileWithMtimeFallback(to, fullPath, srcContent, srcMtime);
     return true; // wrote
   }
 
@@ -635,8 +654,10 @@ export class SyncPair {
     const fullPath = resolvePath(this.root, relPath);
     await ensureDir(this.source, fullPath.substring(0, fullPath.lastIndexOf('/')));
     await ensureDir(this.target, fullPath.substring(0, fullPath.lastIndexOf('/')));
-    await this.source.writeFile(fullPath, content);
-    await this.target.writeFile(fullPath, content);
+    // Use current time as mtime for conflict resolution (both sides get same mtime)
+    const now = Date.now();
+    await writeFileWithMtimeFallback(this.source, fullPath, content, now);
+    await writeFileWithMtimeFallback(this.target, fullPath, content, now);
   }
 
   /**

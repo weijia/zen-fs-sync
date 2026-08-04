@@ -218,6 +218,29 @@ export async function ensureDir(
 }
 
 // ---------------------------------------------------------------------------
+// mtime 保留写入
+// ---------------------------------------------------------------------------
+
+/**
+ * 写入文件时尝试保留源文件的 mtime。
+ *
+ * 如果目标文件系统实现了 `writeFileWithMtime`，则使用该方法写入并传入 mtime；
+ * 否则回退到普通 `writeFile`。
+ */
+export async function writeFileWithMtimeFallback(
+  fs: SyncableFS,
+  path: string,
+  data: string | Uint8Array,
+  mtimeMs?: number,
+): Promise<void> {
+  if (mtimeMs !== undefined && typeof fs.writeFileWithMtime === 'function') {
+    await fs.writeFileWithMtime(path, data, mtimeMs);
+  } else {
+    await fs.writeFile(path, data);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ID 生成
 // ---------------------------------------------------------------------------
 

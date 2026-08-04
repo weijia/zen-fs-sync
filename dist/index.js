@@ -214,6 +214,13 @@ async function ensureDir(fs, dirPath) {
     }
   }
 }
+async function writeFileWithMtimeFallback(fs, path, data, mtimeMs) {
+  if (mtimeMs !== void 0 && typeof fs.writeFileWithMtime === "function") {
+    await fs.writeFileWithMtime(path, data, mtimeMs);
+  } else {
+    await fs.writeFile(path, data);
+  }
+}
 var counter = 0;
 function generatePairId() {
   counter++;
@@ -597,7 +604,13 @@ var SyncPair = class {
               if (isCreated) filesCreated++;
               else filesUpdated++;
               await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf("/")));
-              await tgt.writeFile(tgtPath, resolved.content);
+              let resolvedMtime;
+              try {
+                const srcStat = await src.stat(srcPath);
+                resolvedMtime = srcStat.mtimeMs;
+              } catch {
+              }
+              await writeFileWithMtimeFallback(tgt, tgtPath, resolved.content, resolvedMtime);
               continue;
             }
           }
@@ -614,7 +627,13 @@ var SyncPair = class {
             }
             console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath} (${srcContent.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf("/")));
-            await tgt.writeFile(tgtPath, srcContent);
+            let srcMtime;
+            try {
+              const srcStat = await src.stat(srcPath);
+              srcMtime = srcStat.mtimeMs;
+            } catch {
+            }
+            await writeFileWithMtimeFallback(tgt, tgtPath, srcContent, srcMtime);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
@@ -826,15 +845,22 @@ var SyncPair = class {
     } catch {
     }
     await ensureDir(to, fullPath.substring(0, fullPath.lastIndexOf("/")));
-    await to.writeFile(fullPath, srcContent);
+    let srcMtime;
+    try {
+      const srcStat = await from.stat(fullPath);
+      srcMtime = srcStat.mtimeMs;
+    } catch {
+    }
+    await writeFileWithMtimeFallback(to, fullPath, srcContent, srcMtime);
     return true;
   }
   async writeFileBoth(relPath, content) {
     const fullPath = resolvePath(this.root, relPath);
     await ensureDir(this.source, fullPath.substring(0, fullPath.lastIndexOf("/")));
     await ensureDir(this.target, fullPath.substring(0, fullPath.lastIndexOf("/")));
-    await this.source.writeFile(fullPath, content);
-    await this.target.writeFile(fullPath, content);
+    const now = Date.now();
+    await writeFileWithMtimeFallback(this.source, fullPath, content, now);
+    await writeFileWithMtimeFallback(this.target, fullPath, content, now);
   }
   /**
    * 本地变更回调（由实现了 onChange 的后端在 writeFile/unlink 后触发）。

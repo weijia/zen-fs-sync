@@ -39,6 +39,15 @@ interface SyncableFS {
     /** Optional: human-readable backend name for logging (e.g. 'RemoteStorage@5apps') */
     backendName?: string;
     /**
+     * Optional: write file with precise mtime.
+     *
+     * If implemented, the sync engine uses this method instead of `writeFile`
+     * when copying files, passing the source file's mtime so the target can
+     * preserve it. Backends that don't support precise mtime should not
+     * implement this — the sync engine falls back to plain `writeFile`.
+     */
+    writeFileWithMtime?(path: string, data: string | Uint8Array, mtime: number): Promise<void>;
+    /**
      * Optional: 注册本地变更回调。
      *
      * 当文件系统自身发生变更（writeFile/unlink）时，后端应调用此回调通知 sync 引擎。
