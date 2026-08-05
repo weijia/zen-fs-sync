@@ -60,6 +60,35 @@ interface SyncableFS {
      * 不实现此方法的后端视为无法检测远端变更，sync 引擎会回退到轮询。
      */
     shouldSync?(): Promise<boolean>;
+    /**
+     * Optional: 构建文件系统快照。
+     *
+     * 返回 root 下所有文件的快照映射（相对路径 → {size, mtimeMs}）。
+     * 如果文件系统不可达，返回 null。
+     *
+     * 能提供比通用 walkFiles+stat 更高效快照方法的后端应实现此方法。
+     * 例如：
+     * - Gitee/GitHub 后端可使用 Git tree API 一次性获取所有文件元信息
+     * - IndexedDB 后端可使用 getAll() 批量查询而非逐个 stat
+     * - InMemory 后端可直接遍历内部 Map
+     *
+     * 未实现此方法的后端，sync 引擎回退到通用的 buildSnapshot()（walkFiles + stat）。
+     */
+    createSnapshot?(root: string, filter?: SyncFilter): Promise<Map<string, FileSnapshot> | null>;
+    /**
+     * Optional: 写入文件并保留指定的 mtime。
+     *
+     * 由不支持原生 mtime 的后端实现（如 Gitee/GitHub 的 Git commit 时间
+     * 只有秒级精度且不等于源文件修改时间）。
+     *
+     * 实现方式通常是写入一个 .mtime sidecar 文件来记录精确的 mtimeMs。
+     * sync 引擎的 copyFile() 会在目标端实现此方法时优先使用它，
+     * 以保留源文件的真实 mtime 而非使用同步时间。
+     *
+     * 未实现此方法的后端，sync 引擎回退到普通 writeFile()，
+     * mtime 由后端自行决定（如 IndexedDB/InMemory 使用 Date.now()）。
+     */
+    writeFileWithMtime?(path: string, data: string | Uint8Array, mtimeMs: number): Promise<void>;
     /** @deprecated Use shouldSync() instead */
     checkForUpdates?(): Promise<boolean>;
 }
@@ -261,7 +290,8 @@ declare class SyncPair {
     private pollTimers;
     private debounceTimer?;
     private listeners;
-    private sourceSnapshots?;
+    private prevSrcSnap?;
+    private prevTgtSnap?;
     constructor(source: SyncableFS, target: SyncableFS, options?: SyncOptions, syncRoot?: string);
     /**
      * 执行一次同步。
@@ -282,9 +312,9 @@ declare class SyncPair {
      * Always clears all state (timers, debounce, snapshots) even if no poll
      * timers were set yet. This is critical: buildInitialSnapshots() runs
      * asynchronously inside watch(), and if unwatch() is called before that
-     * async work completes, we must still clear sourceSnapshots so that the
+     * async work completes, we must still clear cached snapshots so that the
      * next syncAll() performs a full comparison instead of skipping due to
-     * a stale cached snapshot.
+     * stale cached snapshots.
      */
     unwatch(): void;
     getStatus(): SyncPairStatus;
@@ -297,6 +327,18 @@ declare class SyncPair {
     private emit;
     private syncOneWay;
     private syncBidirectional;
+    /**
+     * Build a snapshot for the given FS, using its own createSnapshot() if
+     * available, falling back to the generic buildSnapshot() (walkFiles + stat).
+     */
+    private getSnapshot;
+    /**
+     * Compare two snapshots for equality (same paths, same size, same mtime).
+     * Returns true if they are identical, false otherwise.
+     * Undefined prev means "no previous snapshot" → always returns false
+     * (i.e., always treat as changed on first comparison).
+     */
+    private snapshotsEqual;
     private copyFile;
     private writeFileBoth;
     /**
