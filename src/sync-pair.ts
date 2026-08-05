@@ -36,7 +36,6 @@ import {
   generatePairId,
   normalizePath,
   resolvePath,
-  writeFileWithMtimeFallback,
 } from './utils';
 import { createLogger } from './logger';
 
@@ -60,7 +59,10 @@ export class SyncPair {
   private pollTimers: NodeJS.Timer[] = [];
   private debounceTimer?: ReturnType<typeof setTimeout>;
   private listeners = new Map<SyncEventType, Set<SyncEventHandler>>();
-  private sourceSnapshots?: Map<string, FileSnapshot>;
+  // Separate source/target snapshots for precise change detection.
+  // Replaces the previous merged sourceSnapshots which lost file-location info.
+  private prevSrcSnap?: Map<string, FileSnapshot>;
+  private prevTgtSnap?: Map<string, FileSnapshot>;
 
   constructor(
     source: SyncableFS,
@@ -214,9 +216,9 @@ export class SyncPair {
    * Always clears all state (timers, debounce, snapshots) even if no poll
    * timers were set yet. This is critical: buildInitialSnapshots() runs
    * asynchronously inside watch(), and if unwatch() is called before that
-   * async work completes, we must still clear sourceSnapshots so that the
+   * async work completes, we must still clear cached snapshots so that the
    * next syncAll() performs a full comparison instead of skipping due to
-   * a stale cached snapshot.
+   * stale cached snapshots.
    */
   unwatch(): void {
     // 清理所有轮询定时器
@@ -231,10 +233,11 @@ export class SyncPair {
     }
 
     // Clear cached snapshots so the next sync() does a full comparison.
-    // Without this, buildInitialSnapshots() may have already cached a
-    // merged (source ∪ target) snapshot WITHOUT actually syncing files,
-    // causing syncBidirectional() to see "unchanged" and skip.
-    this.sourceSnapshots = undefined;
+    // Without this, buildInitialSnapshots() may have already cached
+    // snapshots WITHOUT actually syncing files, causing syncBidirectional()
+    // to see "unchanged" and skip.
+    this.prevSrcSnap = undefined;
+    this.prevTgtSnap = undefined;
 
     // Only log/emit if we were actually watching (state was Watching or had timers)
     if (this.state === SyncPairState.Watching) {
@@ -276,7 +279,8 @@ export class SyncPair {
     this.unwatch();
     this.state = SyncPairState.Disposed;
     this.listeners.clear();
-    this.sourceSnapshots = undefined;
+    this.prevSrcSnap = undefined;
+    this.prevTgtSnap = undefined;
     log(`disposed ${this.pairId}`);
   }
 
@@ -321,7 +325,7 @@ export class SyncPair {
       src,
       tgt,
       this.root,
-      this.sourceSnapshots,
+      this.prevSrcSnap,
       this.options.filter,
     );
 
@@ -330,11 +334,11 @@ export class SyncPair {
     }
 
     // 更新快照 — only if the source is reachable (not null).
-    // If buildSnapshot returns null, keep the previous snapshot to avoid
+    // If snapshot is null, keep the previous snapshot to avoid
     // treating an unreachable FS as "all files deleted" on the next cycle.
-    const newSnap = await buildSnapshot(src, this.root, this.options.filter);
+    const newSnap = await this.getSnapshot(src);
     if (newSnap !== null) {
-      this.sourceSnapshots = newSnap;
+      this.prevSrcSnap = newSnap;
     }
 
     let filesCreated = 0;
@@ -384,13 +388,7 @@ export class SyncPair {
               else filesUpdated++;
 
               await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf('/')));
-              // Preserve source mtime when writing resolved content
-              let resolvedMtime: number | undefined;
-              try {
-                const srcStat = await src.stat(srcPath);
-                resolvedMtime = srcStat.mtimeMs;
-              } catch { /* source may be gone */ }
-              await writeFileWithMtimeFallback(tgt, tgtPath, resolved.content, resolvedMtime);
+              await tgt.writeFile(tgtPath, resolved.content);
               continue;
             }
           }
@@ -410,13 +408,7 @@ export class SyncPair {
             }
             console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} → ${tgtPath} (${srcContent.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf('/')));
-            // Preserve source mtime when copying
-            let srcMtime: number | undefined;
-            try {
-              const srcStat = await src.stat(srcPath);
-              srcMtime = srcStat.mtimeMs;
-            } catch { /* source may be gone */ }
-            await writeFileWithMtimeFallback(tgt, tgtPath, srcContent, srcMtime);
+            await tgt.writeFile(tgtPath, srcContent);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
@@ -458,8 +450,8 @@ export class SyncPair {
     const startTime = Date.now();
 
     const [srcSnap, tgtSnap] = await Promise.all([
-      buildSnapshot(this.source, this.root, this.options.filter),
-      buildSnapshot(this.target, this.root, this.options.filter),
+      this.getSnapshot(this.source),
+      this.getSnapshot(this.target),
     ]);
 
     if (srcSnap === null || tgtSnap === null) {
@@ -473,32 +465,33 @@ export class SyncPair {
       };
     }
 
-    // 快照快速比较：将当前两端合并快照与上次的合并快照比较。
-    // 如果完全一致（路径、mtime、size 都没变），说明两端都没有变化，跳过同步。
-    const currentMerged = new Map<string, FileSnapshot>([...srcSnap, ...tgtSnap]);
-    if (this.sourceSnapshots && this.sourceSnapshots.size === currentMerged.size) {
-      let unchanged = true;
-      for (const [path, entry] of currentMerged) {
-        const prev = this.sourceSnapshots.get(path);
-        if (!prev || prev.mtimeMs !== entry.mtimeMs || prev.size !== entry.size) {
-          unchanged = false;
-          break;
-        }
-      }
-      if (unchanged) {
-        const durationMs = Date.now() - startTime;
-        return {
-          pairId: this.pairId,
-          direction: SyncDirection.BiDirectional,
-          timestamp: Date.now(),
-          filesCreated: 0, filesUpdated: 0, filesDeleted: 0, filesSkipped: 0,
-          conflicts: [], changes: [], durationMs,
-        };
-      }
+    // Separate snapshot comparison: check each side independently against
+    // its own previous snapshot. This preserves which FS a file belongs to,
+    // unlike the old merged-snapshot approach.
+    const srcChanged = !this.snapshotsEqual(this.prevSrcSnap, srcSnap);
+    const tgtChanged = !this.snapshotsEqual(this.prevTgtSnap, tgtSnap);
+
+    // If neither side changed and we have previous snapshots, skip sync entirely.
+    if (!srcChanged && !tgtChanged && this.prevSrcSnap && this.prevTgtSnap) {
+      const durationMs = Date.now() - startTime;
+      return {
+        pairId: this.pairId,
+        direction: SyncDirection.BiDirectional,
+        timestamp: Date.now(),
+        filesCreated: 0, filesUpdated: 0, filesDeleted: 0, filesSkipped: 0,
+        conflicts: [], changes: [], durationMs,
+      };
     }
 
-    // 保存本次合并快照供下次比较
-    this.sourceSnapshots = currentMerged;
+    // Save references to old snapshots before overwriting — needed for
+    // deletion detection (distinguish "created on one side" from "deleted
+    // from the other side").
+    const oldPrevSrcSnap = this.prevSrcSnap;
+    const oldPrevTgtSnap = this.prevTgtSnap;
+
+    // Save current snapshots for next comparison
+    this.prevSrcSnap = srcSnap;
+    this.prevTgtSnap = tgtSnap;
 
     const srcPaths = Array.from(srcSnap.keys()).sort();
     const tgtPaths = Array.from(tgtSnap.keys()).sort();
@@ -518,34 +511,70 @@ export class SyncPair {
       const tgtEntry = tgtSnap.get(path);
 
       if (!srcEntry && tgtEntry) {
-        // Only on target → copy to source
-        try {
-          const wrote = await this.copyFile(this.target, this.source, path);
-          if (wrote) {
-            filesCreated++;
-            changes.push({ path, type: ChangeType.Created, sourceSnapshot: tgtEntry });
-            console.log(`[zen-fs-sync] COPY target→source ${path}`);
-          } else {
+        // File exists on target but not source.
+        // Use previous snapshots to distinguish created vs deleted:
+        // - If it was on source before → deleted from source → delete from target too
+        // - If it was NOT on source before → created on target → copy to source
+        if (oldPrevSrcSnap?.has(path)) {
+          // Deleted from source → propagate deletion to target
+          try {
+            const fullPath = resolvePath(this.root, path);
+            console.log(`[zen-fs-sync] DELETE (src deleted) target ${path}`);
+            await this.target.unlink(fullPath);
+            filesDeleted++;
+            changes.push({ path, type: ChangeType.Deleted, targetSnapshot: tgtEntry });
+          } catch (err) {
+            console.warn(`[zen-fs-sync] DELETE SKIP (src deleted) target ${path}:`, err);
             filesSkipped++;
           }
-        } catch (err) {
-          console.error(`[zen-fs-sync] COPY FAIL target→source ${path}:`, err);
-          filesSkipped++;
+        } else {
+          // Created on target → copy to source
+          try {
+            const wrote = await this.copyFile(this.target, this.source, path);
+            if (wrote) {
+              filesCreated++;
+              changes.push({ path, type: ChangeType.Created, sourceSnapshot: tgtEntry });
+              console.log(`[zen-fs-sync] COPY target→source ${path}`);
+            } else {
+              filesSkipped++;
+            }
+          } catch (err) {
+            console.error(`[zen-fs-sync] COPY FAIL target→source ${path}:`, err);
+            filesSkipped++;
+          }
         }
       } else if (srcEntry && !tgtEntry) {
-        // Only on source → copy to target
-        try {
-          const wrote = await this.copyFile(this.source, this.target, path);
-          if (wrote) {
-            filesCreated++;
-            changes.push({ path, type: ChangeType.Created, sourceSnapshot: srcEntry });
-            console.log(`[zen-fs-sync] COPY source→target ${path}`);
-          } else {
+        // File exists on source but not target.
+        // Use previous snapshots to distinguish created vs deleted:
+        // - If it was on target before → deleted from target → delete from source too
+        // - If it was NOT on target before → created on source → copy to target
+        if (oldPrevTgtSnap?.has(path)) {
+          // Deleted from target → propagate deletion to source
+          try {
+            const fullPath = resolvePath(this.root, path);
+            console.log(`[zen-fs-sync] DELETE (tgt deleted) source ${path}`);
+            await this.source.unlink(fullPath);
+            filesDeleted++;
+            changes.push({ path, type: ChangeType.Deleted, sourceSnapshot: srcEntry });
+          } catch (err) {
+            console.warn(`[zen-fs-sync] DELETE SKIP (tgt deleted) source ${path}:`, err);
             filesSkipped++;
           }
-        } catch (err) {
-          console.error(`[zen-fs-sync] COPY FAIL source→target ${path}:`, err);
-          filesSkipped++;
+        } else {
+          // Created on source → copy to target
+          try {
+            const wrote = await this.copyFile(this.source, this.target, path);
+            if (wrote) {
+              filesCreated++;
+              changes.push({ path, type: ChangeType.Created, sourceSnapshot: srcEntry });
+              console.log(`[zen-fs-sync] COPY source→target ${path}`);
+            } else {
+              filesSkipped++;
+            }
+          } catch (err) {
+            console.error(`[zen-fs-sync] COPY FAIL source→target ${path}:`, err);
+            filesSkipped++;
+          }
         }
       } else if (srcEntry && tgtEntry) {
         // Both have it — compare mtime
@@ -627,6 +656,38 @@ export class SyncPair {
   // Helpers
   // -----------------------------------------------------------------------
 
+  /**
+   * Build a snapshot for the given FS, using its own createSnapshot() if
+   * available, falling back to the generic buildSnapshot() (walkFiles + stat).
+   */
+  private async getSnapshot(fs: SyncableFS): Promise<Map<string, FileSnapshot> | null> {
+    if (fs.createSnapshot) {
+      return fs.createSnapshot(this.root, this.options.filter);
+    }
+    return buildSnapshot(fs, this.root, this.options.filter);
+  }
+
+  /**
+   * Compare two snapshots for equality (same paths, same size, same mtime).
+   * Returns true if they are identical, false otherwise.
+   * Undefined prev means "no previous snapshot" → always returns false
+   * (i.e., always treat as changed on first comparison).
+   */
+  private snapshotsEqual(
+    prev: Map<string, FileSnapshot> | undefined,
+    current: Map<string, FileSnapshot>,
+  ): boolean {
+    if (!prev) return false;
+    if (prev.size !== current.size) return false;
+    for (const [path, entry] of current) {
+      const prevEntry = prev.get(path);
+      if (!prevEntry || prevEntry.mtimeMs !== entry.mtimeMs || prevEntry.size !== entry.size) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private async copyFile(from: SyncableFS, to: SyncableFS, relPath: string): Promise<boolean> {
     const fullPath = resolvePath(this.root, relPath);
     const srcContent = await from.readFile(fullPath, 'utf-8');
@@ -640,13 +701,21 @@ export class SyncPair {
       // target file doesn't exist — proceed with write
     }
     await ensureDir(to, fullPath.substring(0, fullPath.lastIndexOf('/')));
-    // Preserve source mtime when copying
-    let srcMtime: number | undefined;
-    try {
-      const srcStat = await from.stat(fullPath);
-      srcMtime = srcStat.mtimeMs;
-    } catch { /* source may be gone */ }
-    await writeFileWithMtimeFallback(to, fullPath, srcContent, srcMtime);
+    // Prefer writeFileWithMtime to preserve source file's real mtime.
+    // This matters for backends like Gitee/GitHub where the native mtime
+    // (commit time) differs from the actual file modification time.
+    if (to.writeFileWithMtime) {
+      let srcMtimeMs = Date.now();
+      try {
+        const srcStat = await from.stat(fullPath);
+        srcMtimeMs = srcStat.mtimeMs;
+      } catch {
+        // stat failed — fall back to current time
+      }
+      await to.writeFileWithMtime(fullPath, srcContent, srcMtimeMs);
+    } else {
+      await to.writeFile(fullPath, srcContent);
+    }
     return true; // wrote
   }
 
@@ -654,10 +723,17 @@ export class SyncPair {
     const fullPath = resolvePath(this.root, relPath);
     await ensureDir(this.source, fullPath.substring(0, fullPath.lastIndexOf('/')));
     await ensureDir(this.target, fullPath.substring(0, fullPath.lastIndexOf('/')));
-    // Use current time as mtime for conflict resolution (both sides get same mtime)
-    const now = Date.now();
-    await writeFileWithMtimeFallback(this.source, fullPath, content, now);
-    await writeFileWithMtimeFallback(this.target, fullPath, content, now);
+    const resolvedMtime = Date.now();
+    if (this.source.writeFileWithMtime) {
+      await this.source.writeFileWithMtime(fullPath, content, resolvedMtime);
+    } else {
+      await this.source.writeFile(fullPath, content);
+    }
+    if (this.target.writeFileWithMtime) {
+      await this.target.writeFileWithMtime(fullPath, content, resolvedMtime);
+    } else {
+      await this.target.writeFile(fullPath, content);
+    }
   }
 
   /**
@@ -710,8 +786,8 @@ export class SyncPair {
   private async buildInitialSnapshots(): Promise<void> {
     if (this.options.direction === SyncDirection.BiDirectional) {
       const [srcSnap, tgtSnap] = await Promise.all([
-        buildSnapshot(this.source, this.root, this.options.filter),
-        buildSnapshot(this.target, this.root, this.options.filter),
+        this.getSnapshot(this.source),
+        this.getSnapshot(this.target),
       ]);
       // If either side is unreachable, skip initialization (leave undefined).
       // The next sync cycle will try again.
@@ -725,21 +801,18 @@ export class SyncPair {
         log(`buildInitialSnapshots: state changed to ${this.state} during build — discarding snapshots`);
         return;
       }
-      // 合并两个快照用于增量检测
-      this.sourceSnapshots = new Map([...srcSnap, ...tgtSnap]);
+      // Store separate snapshots for precise change detection
+      this.prevSrcSnap = srcSnap;
+      this.prevTgtSnap = tgtSnap;
     } else {
-      const snap = await buildSnapshot(
-        this.source,
-        this.root,
-        this.options.filter,
-      );
+      const snap = await this.getSnapshot(this.source);
       // Guard: same as above
       if (this.state !== SyncPairState.Watching) {
         log(`buildInitialSnapshots: state changed to ${this.state} during build — discarding snapshots`);
         return;
       }
       if (snap !== null) {
-        this.sourceSnapshots = snap;
+        this.prevSrcSnap = snap;
       } else {
         log(`buildInitialSnapshots: source unreachable (null) — skipping init`);
       }

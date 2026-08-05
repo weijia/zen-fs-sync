@@ -2,7 +2,7 @@
  * 测试用内存文件系统 Mock，实现 SyncableFS 接口
  */
 
-import type { FileStat, SyncableFS } from '../src/types';
+import type { FileSnapshot, FileStat, SyncFilter, SyncableFS } from '../src/types';
 
 export interface MockFile {
   content: string;
@@ -13,6 +13,10 @@ export class MockFS implements SyncableFS {
   private files = new Map<string, MockFile>();
   private dirs = new Set<string>();
   private mtimeCounter = 1000;
+  /** Tracks how many times createSnapshot was called (test verification) */
+  createSnapshotCalls = 0;
+  /** When true, MockFS provides its own createSnapshot (optimized path) */
+  useOptimizedSnapshot = false;
 
   constructor(initial?: Record<string, string>) {
     this.dirs.add('/');
@@ -104,6 +108,33 @@ export class MockFS implements SyncableFS {
 
   async exists(path: string): Promise<boolean> {
     return this.files.has(path) || this.dirs.has(path);
+  }
+
+  async createSnapshot(root: string, _filter?: SyncFilter): Promise<Map<string, FileSnapshot> | null> {
+    this.createSnapshotCalls++;
+    const normalizedRoot = root.replace(/\/$/, '') || '/';
+    const snapshot = new Map<string, FileSnapshot>();
+
+    for (const [filePath, file] of this.files) {
+      // Compute relative path from root
+      let relPath: string;
+      if (normalizedRoot === '/') {
+        relPath = filePath;
+      } else if (filePath.startsWith(normalizedRoot + '/')) {
+        relPath = filePath.slice(normalizedRoot.length);
+      } else {
+        continue; // Not under root
+      }
+      if (!relPath.startsWith('/')) relPath = '/' + relPath;
+
+      snapshot.set(relPath, {
+        path: relPath,
+        size: file.content.length,
+        mtimeMs: file.mtimeMs,
+      });
+    }
+
+    return snapshot;
   }
 
   // --- 测试辅助方法 ---
