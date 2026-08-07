@@ -200,6 +200,18 @@ interface SyncOptions {
     debounceMs?: number;
     /** watch 模式下的轮询间隔（ms），默认 1800000（30 分钟） */
     pollIntervalMs?: number;
+    /**
+     * 同步前钩子。在 sync() 执行快照对比之前调用。
+     * 用于在同步传播之前执行预处理（如删除墓碑标记的文件）。
+     * 如果抛出异常，同步仍会继续。
+     */
+    preSyncHook?: () => Promise<void>;
+    /**
+     * 同步后钩子。在 sync() 完成快照对比之后调用。
+     * 用于在同步完成后执行后处理（如更新墓碑确认、GC）。
+     * 如果抛出异常，同步结果仍会返回。
+     */
+    postSyncHook?: () => Promise<void>;
 }
 /** 同步对的内部配置（所有字段已填充默认值） */
 interface ResolvedSyncOptions {
@@ -208,6 +220,8 @@ interface ResolvedSyncOptions {
     filter?: SyncFilter;
     debounceMs: number;
     pollIntervalMs: number;
+    preSyncHook?: () => Promise<void>;
+    postSyncHook?: () => Promise<void>;
 }
 /** 单次同步操作的结果 */
 interface SyncResult {

@@ -82,6 +82,8 @@ export class SyncPair {
       debounceMs: options.debounceMs ?? 300,
       pollIntervalMs: options.pollIntervalMs ?? 30 * 60 * 1000, // 30 min
       filter: options.filter,
+      preSyncHook: options.preSyncHook,
+      postSyncHook: options.postSyncHook,
     };
 
     // 检测器：watch 模式用增量，手动模式用全量
@@ -114,10 +116,29 @@ export class SyncPair {
     try {
       let result: SyncResult;
 
+      // preSyncHook: e.g. ConfigRepo.processTombstones() — delete real files
+      // on replicas BEFORE sync runs, so sync doesn't resurrect them.
+      if (this.options.preSyncHook) {
+        try {
+          await this.options.preSyncHook();
+        } catch (err) {
+          console.warn(`[zen-fs-sync] preSyncHook error pairId=${this.pairId}`, err);
+        }
+      }
+
       if (this.options.direction === SyncDirection.BiDirectional) {
         result = await this.syncBidirectional();
       } else {
         result = await this.syncOneWay(this.source, this.target, 'source→target');
+      }
+
+      // postSyncHook: e.g. ConfigRepo.updateTombstoneConfirmations() + gcTombstones()
+      if (this.options.postSyncHook) {
+        try {
+          await this.options.postSyncHook();
+        } catch (err) {
+          console.warn(`[zen-fs-sync] postSyncHook error pairId=${this.pairId}`, err);
+        }
       }
 
       result.durationMs = Date.now() - startTime;

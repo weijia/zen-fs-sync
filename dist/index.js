@@ -345,7 +345,9 @@ var SyncPair = class {
       debounceMs: options.debounceMs ?? 300,
       pollIntervalMs: options.pollIntervalMs ?? 30 * 60 * 1e3,
       // 30 min
-      filter: options.filter
+      filter: options.filter,
+      preSyncHook: options.preSyncHook,
+      postSyncHook: options.postSyncHook
     };
     this.detector = new IncrementalDetector();
     this.resolver = new DefaultConflictResolver();
@@ -390,10 +392,24 @@ var SyncPair = class {
     this.emit({ type: "sync:start", pairId: this.pairId, timestamp: Date.now() });
     try {
       let result;
+      if (this.options.preSyncHook) {
+        try {
+          await this.options.preSyncHook();
+        } catch (err) {
+          console.warn(`[zen-fs-sync] preSyncHook error pairId=${this.pairId}`, err);
+        }
+      }
       if (this.options.direction === "bi-directional" /* BiDirectional */) {
         result = await this.syncBidirectional();
       } else {
         result = await this.syncOneWay(this.source, this.target, "source\u2192target");
+      }
+      if (this.options.postSyncHook) {
+        try {
+          await this.options.postSyncHook();
+        } catch (err) {
+          console.warn(`[zen-fs-sync] postSyncHook error pairId=${this.pairId}`, err);
+        }
       }
       result.durationMs = Date.now() - startTime;
       this.lastResult = result;

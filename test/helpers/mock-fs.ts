@@ -137,6 +137,25 @@ export class MockFS implements SyncableFS {
     return snapshot;
   }
 
+  /** Tracks writeFileWithMtime calls for test verification */
+  writeFileWithMtimeCalls = 0;
+  /** Last mtimeMs passed to writeFileWithMtime */
+  lastWriteMtime: number | undefined;
+
+  async writeFileWithMtime(path: string, data: string | Uint8Array, mtimeMs: number): Promise<void> {
+    this.writeFileWithMtimeCalls++;
+    this.lastWriteMtime = mtimeMs;
+    const content = typeof data === 'string' ? data : new TextDecoder().decode(data);
+    this.files.set(path, { content, mtimeMs });
+    // 自动创建父目录
+    const parts = path.split('/').filter(Boolean);
+    let dir = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir += `/${parts[i]}`;
+      this.dirs.add(dir);
+    }
+  }
+
   // --- 测试辅助方法 ---
 
   /** 获取文件内容 */

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SyncPair } from '../src/sync-pair';
 import { MockFS } from './helpers/mock-fs';
-import { SyncDirection } from '../src/types';
+import { SyncDirection, ConflictStrategy } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // createSnapshot() optimization tests
@@ -183,5 +183,113 @@ describe('unwatch clears separate snapshots', () => {
     // Should be a no-op since nothing changed, but it should NOT skip
     // due to stale snapshots
     expect(result).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// copyFile uses writeFileWithMtime when available
+// ---------------------------------------------------------------------------
+// NOTE: copyFile() is only invoked from syncBidirectional(). The one-way
+// path (syncOneWay) writes directly via tgt.writeFile(), bypassing the
+// writeFileWithMtime preservation. To exercise the mtime-preservation
+// behavior in copyFile, these tests use BiDirectional.
+describe('copyFile uses writeFileWithMtime', () => {
+  it('calls writeFileWithMtime on target when copying source→target', async () => {
+    const src = new MockFS({ '/data.json': '{"hello":"world"}' });
+    const tgt = new MockFS();
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    await pair.sync();
+
+    // writeFileWithMtime should have been called on the target
+    expect(tgt.writeFileWithMtimeCalls).toBeGreaterThan(0);
+    // The mtime passed should equal the source file's mtime
+    expect(tgt.lastWriteMtime).toBe(src.getMtime('/data.json'));
+    // Content should be copied correctly
+    expect(tgt.getContent('/data.json')).toBe(src.getContent('/data.json'));
+  });
+
+  it('falls back to writeFile when target does not support writeFileWithMtime', async () => {
+    const src = new MockFS({ '/data.json': '{"hello":"world"}' });
+    const tgt = new MockFS();
+    // Simulate a backend that does not implement writeFileWithMtime.
+    // Setting the own property to undefined shadows the prototype method so
+    // the `if (to.writeFileWithMtime)` guard in copyFile falls back to writeFile.
+    (tgt as any).writeFileWithMtime = undefined;
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    await pair.sync();
+
+    // writeFileWithMtime should NOT have been called
+    expect(tgt.writeFileWithMtimeCalls).toBe(0);
+    // The file should still be copied via plain writeFile
+    expect(tgt.getContent('/data.json')).toBe(src.getContent('/data.json'));
+  });
+
+  it('preserves source mtime across sync', async () => {
+    const FIXED_MTIME = 1700000000000;
+    const src = new MockFS({ '/data.json': '{"hello":"world"}' });
+    src.setMtime('/data.json', FIXED_MTIME);
+    const tgt = new MockFS();
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    await pair.sync();
+
+    // The target file's mtime should equal the source's fixed mtime,
+    // proving writeFileWithMtime was called with the correct mtime.
+    expect(tgt.getMtime('/data.json')).toBe(FIXED_MTIME);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeFileBoth in conflict resolution
+// ---------------------------------------------------------------------------
+// In syncBidirectional, a conflict (same mtime, different size + different
+// content) is resolved by calling writeFileBoth(), which writes the resolved
+// content to both sides using writeFileWithMtime when available.
+describe('writeFileBoth conflict resolution', () => {
+  it('uses writeFileWithMtime on both sides when resolving conflict', async () => {
+    // Both sides have /conflict.json with the SAME mtime but DIFFERENT content.
+    // The contents must differ in size too, otherwise syncBidirectional treats
+    // equal mtime + equal size as identical and skips the file entirely.
+    const src = new MockFS({ '/conflict.json': '{"v":"src"}' });
+    const tgt = new MockFS({ '/conflict.json': '{"v":"target"}' });
+    src.setMtime('/conflict.json', 1000);
+    tgt.setMtime('/conflict.json', 1000);
+
+    const pair = new SyncPair(
+      src,
+      tgt,
+      { direction: SyncDirection.BiDirectional, conflictStrategy: ConflictStrategy.SourceWins },
+      '/',
+    );
+    const result = await pair.sync();
+
+    // A conflict should have been recorded
+    expect(result.conflicts.length).toBe(1);
+    // writeFileWithMtime should have been called on BOTH sides
+    expect(src.writeFileWithMtimeCalls).toBeGreaterThan(0);
+    expect(tgt.writeFileWithMtimeCalls).toBeGreaterThan(0);
+  });
+
+  it('writeFileBoth writes identical content to both sides', async () => {
+    const SRC_CONTENT = '{"v":"src"}';
+    const src = new MockFS({ '/conflict.json': SRC_CONTENT });
+    const tgt = new MockFS({ '/conflict.json': '{"v":"target"}' });
+    src.setMtime('/conflict.json', 1000);
+    tgt.setMtime('/conflict.json', 1000);
+
+    const pair = new SyncPair(
+      src,
+      tgt,
+      { direction: SyncDirection.BiDirectional, conflictStrategy: ConflictStrategy.SourceWins },
+      '/',
+    );
+    await pair.sync();
+
+    // Both sides should now have the same content (source wins)
+    expect(src.getContent('/conflict.json')).toBe(SRC_CONTENT);
+    expect(tgt.getContent('/conflict.json')).toBe(SRC_CONTENT);
+    expect(src.getContent('/conflict.json')).toBe(tgt.getContent('/conflict.json'));
   });
 });
