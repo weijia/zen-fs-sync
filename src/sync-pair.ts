@@ -455,6 +455,7 @@ export class SyncPair {
         case ChangeType.Deleted: {
           try {
             console.log(`[zen-fs-sync] DELETE [${directionLabel}] ${tgtPath}`);
+            console.log(`[SYNC-TRACE] oneway DELETE → tgt.unlink(${tgtPath}) — NO exists() check before unlink`);
             await tgt.unlink(tgtPath);
             filesDeleted++;
           } catch (err) {
@@ -554,6 +555,7 @@ export class SyncPair {
           try {
             const fullPath = resolvePath(this.root, path);
             console.log(`[zen-fs-sync] DELETE (src deleted) target ${path}`);
+            console.log(`[SYNC-TRACE] bidirectional DELETE (src deleted) → target.unlink(${fullPath}) — NO exists() check before unlink`);
             await this.target.unlink(fullPath);
             filesDeleted++;
             changes.push({ path, type: ChangeType.Deleted, targetSnapshot: tgtEntry });
@@ -587,6 +589,7 @@ export class SyncPair {
           try {
             const fullPath = resolvePath(this.root, path);
             console.log(`[zen-fs-sync] DELETE (tgt deleted) source ${path}`);
+            console.log(`[SYNC-TRACE] bidirectional DELETE (tgt deleted) → source.unlink(${fullPath}) — NO exists() check before unlink`);
             await this.source.unlink(fullPath);
             filesDeleted++;
             changes.push({ path, type: ChangeType.Deleted, sourceSnapshot: srcEntry });

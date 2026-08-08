@@ -315,6 +315,13 @@ declare class SyncPair {
     private listeners;
     private prevSrcSnap?;
     private prevTgtSnap?;
+    /**
+     * Set to true while preSyncHook / postSyncHook are running.
+     * Write operations inside hooks (e.g. updateTombstoneConfirmations)
+     * would otherwise trigger onChange → scheduleSync → sync → postSyncHook,
+     * creating an infinite loop.
+     */
+    private hookInProgress;
     constructor(source: SyncableFS, target: SyncableFS, options?: SyncOptions, syncRoot?: string);
     /**
      * 执行一次同步。

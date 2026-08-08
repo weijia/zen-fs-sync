@@ -334,6 +334,13 @@ var SyncPair = class {
   // Replaces the previous merged sourceSnapshots which lost file-location info.
   prevSrcSnap;
   prevTgtSnap;
+  /**
+   * Set to true while preSyncHook / postSyncHook are running.
+   * Write operations inside hooks (e.g. updateTombstoneConfirmations)
+   * would otherwise trigger onChange → scheduleSync → sync → postSyncHook,
+   * creating an infinite loop.
+   */
+  hookInProgress = false;
   // -----------------------------------------------------------------------
   // 手动同步
   // -----------------------------------------------------------------------
@@ -354,10 +361,13 @@ var SyncPair = class {
     try {
       let result;
       if (this.options.preSyncHook) {
+        this.hookInProgress = true;
         try {
           await this.options.preSyncHook();
         } catch (err) {
           console.warn(`[zen-fs-sync] preSyncHook error pairId=${this.pairId}`, err);
+        } finally {
+          this.hookInProgress = false;
         }
       }
       if (this.options.direction === "bi-directional" /* BiDirectional */) {
@@ -366,10 +376,13 @@ var SyncPair = class {
         result = await this.syncOneWay(this.source, this.target, "source\u2192target");
       }
       if (this.options.postSyncHook) {
+        this.hookInProgress = true;
         try {
           await this.options.postSyncHook();
         } catch (err) {
           console.warn(`[zen-fs-sync] postSyncHook error pairId=${this.pairId}`, err);
+        } finally {
+          this.hookInProgress = false;
         }
       }
       result.durationMs = Date.now() - startTime;
@@ -608,6 +621,7 @@ var SyncPair = class {
         case "deleted" /* Deleted */: {
           try {
             console.log(`[zen-fs-sync] DELETE [${directionLabel}] ${tgtPath}`);
+            console.log(`[SYNC-TRACE] oneway DELETE \u2192 tgt.unlink(${tgtPath}) \u2014 NO exists() check before unlink`);
             await tgt.unlink(tgtPath);
             filesDeleted++;
           } catch (err) {
@@ -692,6 +706,7 @@ var SyncPair = class {
           try {
             const fullPath = resolvePath(this.root, path);
             console.log(`[zen-fs-sync] DELETE (src deleted) target ${path}`);
+            console.log(`[SYNC-TRACE] bidirectional DELETE (src deleted) \u2192 target.unlink(${fullPath}) \u2014 NO exists() check before unlink`);
             await this.target.unlink(fullPath);
             filesDeleted++;
             changes.push({ path, type: "deleted" /* Deleted */, targetSnapshot: tgtEntry });
@@ -719,6 +734,7 @@ var SyncPair = class {
           try {
             const fullPath = resolvePath(this.root, path);
             console.log(`[zen-fs-sync] DELETE (tgt deleted) source ${path}`);
+            console.log(`[SYNC-TRACE] bidirectional DELETE (tgt deleted) \u2192 source.unlink(${fullPath}) \u2014 NO exists() check before unlink`);
             await this.source.unlink(fullPath);
             filesDeleted++;
             changes.push({ path, type: "deleted" /* Deleted */, sourceSnapshot: srcEntry });
@@ -889,6 +905,7 @@ var SyncPair = class {
    * 仅做防抖调度，不直接同步。
    */
   onLocalChange() {
+    if (this.hookInProgress) return;
     this.scheduleSync();
   }
   /**
