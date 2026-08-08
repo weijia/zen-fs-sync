@@ -63,6 +63,13 @@ export class SyncPair {
   // Replaces the previous merged sourceSnapshots which lost file-location info.
   private prevSrcSnap?: Map<string, FileSnapshot>;
   private prevTgtSnap?: Map<string, FileSnapshot>;
+  /**
+   * Set to true while preSyncHook / postSyncHook are running.
+   * Write operations inside hooks (e.g. updateTombstoneConfirmations)
+   * would otherwise trigger onChange → scheduleSync → sync → postSyncHook,
+   * creating an infinite loop.
+   */
+  private hookInProgress = false;
 
   constructor(
     source: SyncableFS,
@@ -119,10 +126,13 @@ export class SyncPair {
       // preSyncHook: e.g. ConfigRepo.processTombstones() — delete real files
       // on replicas BEFORE sync runs, so sync doesn't resurrect them.
       if (this.options.preSyncHook) {
+        this.hookInProgress = true;
         try {
           await this.options.preSyncHook();
         } catch (err) {
           console.warn(`[zen-fs-sync] preSyncHook error pairId=${this.pairId}`, err);
+        } finally {
+          this.hookInProgress = false;
         }
       }
 
@@ -134,10 +144,13 @@ export class SyncPair {
 
       // postSyncHook: e.g. ConfigRepo.updateTombstoneConfirmations() + gcTombstones()
       if (this.options.postSyncHook) {
+        this.hookInProgress = true;
         try {
           await this.options.postSyncHook();
         } catch (err) {
           console.warn(`[zen-fs-sync] postSyncHook error pairId=${this.pairId}`, err);
+        } finally {
+          this.hookInProgress = false;
         }
       }
 
@@ -762,6 +775,7 @@ export class SyncPair {
    * 仅做防抖调度，不直接同步。
    */
   private onLocalChange(): void {
+    if (this.hookInProgress) return;
     this.scheduleSync();
   }
 
