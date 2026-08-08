@@ -372,6 +372,19 @@ declare class SyncPair {
     private copyFile;
     private writeFileBoth;
     /**
+     * Write identical content to both sides with the specified mtime.
+     *
+     * Used when content is identical but mtime differs between source and
+     * target — normalizes both sides to the oldest mtime so subsequent sync
+     * cycles don't waste I/O re-reading and re-comparing the same files.
+     *
+     * Only writes to sides that implement writeFileWithMtime. Sides without
+     * it cannot have their mtime set externally, so they are left unchanged
+     * (writing the same content via plain writeFile would set mtime to
+     * Date.now(), making things worse).
+     */
+    private normalizeMtimeBoth;
+    /**
      * 本地变更回调（由实现了 onChange 的后端在 writeFile/unlink 后触发）。
      * 仅做防抖调度，不直接同步。
      */

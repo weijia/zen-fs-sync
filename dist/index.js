@@ -800,33 +800,41 @@ var SyncPair = class {
         if (srcEntry.mtimeMs === tgtEntry.mtimeMs && srcEntry.size === tgtEntry.size) {
           continue;
         }
-        if (srcEntry.mtimeMs > tgtEntry.mtimeMs) {
+        if (srcEntry.mtimeMs !== tgtEntry.mtimeMs) {
+          const fullPath = resolvePath(this.root, path);
+          let srcContent;
+          let tgtContent;
           try {
-            const wrote = await this.copyFile(this.source, this.target, path);
-            if (wrote) {
-              filesUpdated++;
-              changes.push({ path, type: "modified" /* Modified */, sourceSnapshot: srcEntry, targetSnapshot: tgtEntry });
-              console.log(`[zen-fs-sync] UPDATE source\u2192target ${path} (src newer mtime=${srcEntry.mtimeMs} > tgt=${tgtEntry.mtimeMs})`);
-            } else {
-              filesSkipped++;
-            }
+            srcContent = await this.source.readFile(fullPath, "utf-8");
+            tgtContent = await this.target.readFile(fullPath, "utf-8");
           } catch (err) {
-            console.error(`[zen-fs-sync] UPDATE FAIL source\u2192target ${path}:`, err);
+            console.error(`[zen-fs-sync] CONTENT READ FAIL ${path}:`, err);
             filesSkipped++;
+            continue;
           }
-        } else if (tgtEntry.mtimeMs > srcEntry.mtimeMs) {
-          try {
-            const wrote = await this.copyFile(this.target, this.source, path);
-            if (wrote) {
-              filesUpdated++;
-              changes.push({ path, type: "modified" /* Modified */, sourceSnapshot: tgtEntry, targetSnapshot: srcEntry });
-              console.log(`[zen-fs-sync] UPDATE target\u2192source ${path} (tgt newer mtime=${tgtEntry.mtimeMs} > src=${srcEntry.mtimeMs})`);
-            } else {
+          if (srcContent === tgtContent) {
+            const oldestMtime = Math.min(srcEntry.mtimeMs, tgtEntry.mtimeMs);
+            await this.normalizeMtimeBoth(path, srcContent, oldestMtime);
+            filesSkipped++;
+            console.log(`[zen-fs-sync] MTIME NORMALIZE ${path} \u2192 mtime=${oldestMtime} (content identical, was src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs})`);
+          } else {
+            const newerIsSource = srcEntry.mtimeMs > tgtEntry.mtimeMs;
+            const fromFs = newerIsSource ? this.source : this.target;
+            const toFs = newerIsSource ? this.target : this.source;
+            const fromLabel = newerIsSource ? "source\u2192target" : "target\u2192source";
+            try {
+              const wrote = await this.copyFile(fromFs, toFs, path);
+              if (wrote) {
+                filesUpdated++;
+                changes.push({ path, type: "modified" /* Modified */, sourceSnapshot: newerIsSource ? srcEntry : tgtEntry, targetSnapshot: newerIsSource ? tgtEntry : srcEntry });
+                console.log(`[zen-fs-sync] UPDATE ${fromLabel} ${path} (mtime=${newerIsSource ? srcEntry.mtimeMs : tgtEntry.mtimeMs} > ${newerIsSource ? tgtEntry.mtimeMs : srcEntry.mtimeMs})`);
+              } else {
+                filesSkipped++;
+              }
+            } catch (err) {
+              console.error(`[zen-fs-sync] UPDATE FAIL ${fromLabel} ${path}:`, err);
               filesSkipped++;
             }
-          } catch (err) {
-            console.error(`[zen-fs-sync] UPDATE FAIL target\u2192source ${path}:`, err);
-            filesSkipped++;
           }
         } else {
           const srcContent = await this.source.readFile(resolvePath(this.root, path), "utf-8");
@@ -937,6 +945,27 @@ var SyncPair = class {
       await this.target.writeFileWithMtime(fullPath, content, resolvedMtime);
     } else {
       await this.target.writeFile(fullPath, content);
+    }
+  }
+  /**
+   * Write identical content to both sides with the specified mtime.
+   *
+   * Used when content is identical but mtime differs between source and
+   * target — normalizes both sides to the oldest mtime so subsequent sync
+   * cycles don't waste I/O re-reading and re-comparing the same files.
+   *
+   * Only writes to sides that implement writeFileWithMtime. Sides without
+   * it cannot have their mtime set externally, so they are left unchanged
+   * (writing the same content via plain writeFile would set mtime to
+   * Date.now(), making things worse).
+   */
+  async normalizeMtimeBoth(relPath, content, mtimeMs) {
+    const fullPath = resolvePath(this.root, relPath);
+    if (this.source.writeFileWithMtime) {
+      await this.source.writeFileWithMtime(fullPath, content, mtimeMs);
+    }
+    if (this.target.writeFileWithMtime) {
+      await this.target.writeFileWithMtime(fullPath, content, mtimeMs);
     }
   }
   /**
