@@ -169,7 +169,7 @@ export async function buildSnapshot(
   try {
     await fs.readdir(normalizedRoot);
   } catch {
-    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): unreachable, returning null`);
+    log(`buildSnapshot(${fsName}): unreachable, returning null`);
     return null;
   }
 
@@ -306,7 +306,7 @@ export function diffSnapshots(
 ): import('./types').ChangeEntry[] {
   // If either snapshot is null (FS unreachable), skip — don't infer deletions.
   if (source === null || target === null) {
-    console.log(`[zen-fs-sync] diffSnapshots: one side is null (unreachable) — skipping to prevent false deletions`);
+    log(`diffSnapshots: one side is null (unreachable) — skipping to prevent false deletions`);
     return [];
   }
 

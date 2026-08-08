@@ -477,23 +477,29 @@ declare class ZenFSSync {
 }
 
 /**
- * zen-fs-sync — Debug Logger
+ * zen-fs-sync — Debug Logger (powered by @richard432/localstorage-logger)
  *
- * 轻量级调试日志系统，支持全局开关和标签过滤。
- *
- * 使用方式：
- *   import { createLogger } from './logger';
- *   const log = createLogger('sync');
- *   log('file list:', files);           // [zen-fs-sync:sync] file list: [...]
- *
- * 开启调试（在调用 createConfigRepo 之前设置）：
- *   import { setDebug } from 'zen-fs-sync/logger';
- *   setDebug(true);                        // 开启全部
- *   setDebug('sync,detector');             // 只开 sync 和 detector 标签
+ * 每个模块对应一个 localStorage key `debug:zen-fs-sync:<tag>`。
+ * key 不存在时自动创建并设为 '1'（默认开启）。
+ * 在浏览器控制台中控制：
+ *   localStorage.setItem('debug:zen-fs-sync:sync', '0')  // 关闭
+ *   localStorage.setItem('debug:zen-fs-sync:sync', '1')  // 开启
+ */
+/**
+ * Create a logger for the given tag.
+ * Returns a single-argument function (backward compatible with existing callers).
+ */
+declare function createLogger(tag: string): (...args: unknown[]) => void;
+/**
+ * Enable/disable debug logging.
+ * @param value - `true` to enable all, `false` to disable all,
+ *                or a comma-separated string of tag names to enable.
  */
 declare function setDebug(value: boolean | string): void;
+/**
+ * Check if debug logging is enabled for the sync module.
+ */
 declare function isDebugEnabled(): boolean;
-declare function createLogger(tag: string): (...args: unknown[]) => void;
 
 /**
  * zen-fs-sync — 全量变更检测器

@@ -71,29 +71,26 @@ var SyncPairState = /* @__PURE__ */ ((SyncPairState3) => {
 })(SyncPairState || {});
 
 // src/logger.ts
-var enabled = false;
-var tagFilter = /* @__PURE__ */ new Set();
+var import_localstorage_logger = require("@richard432/localstorage-logger");
+var MODULE_PREFIX = "zen-fs-sync";
+function createLogger(tag) {
+  const logger = (0, import_localstorage_logger.createLogger)(`${MODULE_PREFIX}:${tag}`);
+  return (...args) => logger.log(...args);
+}
 function setDebug(value) {
   if (typeof value === "string") {
-    enabled = true;
-    tagFilter.clear();
-    for (const tag of value.split(",").map((s) => s.trim()).filter(Boolean)) {
-      tagFilter.add(tag);
+    const tags = value.split(",").map((s) => s.trim()).filter(Boolean);
+    for (const tag of tags) {
+      (0, import_localstorage_logger.setDebugEnabled)(`${MODULE_PREFIX}:${tag}`, true);
     }
   } else {
-    enabled = value;
-    tagFilter.clear();
+    (0, import_localstorage_logger.setDebugEnabled)(`${MODULE_PREFIX}:sync`, value);
+    (0, import_localstorage_logger.setDebugEnabled)(`${MODULE_PREFIX}:detector`, value);
+    (0, import_localstorage_logger.setDebugEnabled)(`${MODULE_PREFIX}:strategy`, value);
   }
 }
 function isDebugEnabled() {
-  return enabled;
-}
-function createLogger(tag) {
-  return (...args) => {
-    if (!enabled) return;
-    if (tagFilter.size > 0 && !tagFilter.has(tag)) return;
-    console.log(`[zen-fs-sync:${tag}]`, ...args);
-  };
+  return (0, import_localstorage_logger.isDebugEnabled)(`${MODULE_PREFIX}:sync`);
 }
 
 // src/utils.ts
@@ -183,7 +180,7 @@ async function buildSnapshot(fs, root, filter) {
   try {
     await fs.readdir(normalizedRoot);
   } catch {
-    console.warn(`[zen-fs-sync] buildSnapshot(${fsName}): unreachable, returning null`);
+    log(`buildSnapshot(${fsName}): unreachable, returning null`);
     return null;
   }
   const files = await walkFiles(fs, root, filter);
@@ -244,7 +241,7 @@ function isJsonPath(path) {
 }
 function diffSnapshots(source, target) {
   if (source === null || target === null) {
-    console.log(`[zen-fs-sync] diffSnapshots: one side is null (unreachable) \u2014 skipping to prevent false deletions`);
+    log(`diffSnapshots: one side is null (unreachable) \u2014 skipping to prevent false deletions`);
     return [];
   }
   const changes = [];
@@ -404,7 +401,7 @@ var SyncPair = class {
         try {
           await this.options.preSyncHook();
         } catch (err) {
-          console.warn(`[zen-fs-sync] preSyncHook error pairId=${this.pairId}`, err);
+          log3(`[zen-fs-sync] preSyncHook error pairId=${this.pairId}`, err);
         } finally {
           this.hookInProgress = false;
         }
@@ -419,7 +416,7 @@ var SyncPair = class {
         try {
           await this.options.postSyncHook();
         } catch (err) {
-          console.warn(`[zen-fs-sync] postSyncHook error pairId=${this.pairId}`, err);
+          log3(`[zen-fs-sync] postSyncHook error pairId=${this.pairId}`, err);
         } finally {
           this.hookInProgress = false;
         }
@@ -430,7 +427,7 @@ var SyncPair = class {
       this.state = this.pollTimers.length > 0 ? "watching" /* Watching */ : "idle" /* Idle */;
       const hasActivity = result.filesCreated > 0 || result.filesUpdated > 0 || result.filesDeleted > 0 || result.conflicts.length > 0;
       if (hasActivity) {
-        console.log(`[zen-fs-sync] sync pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
+        log3(`[zen-fs-sync] sync pairId=${this.pairId} +${result.filesCreated}/~${result.filesUpdated}/-${result.filesDeleted} skip:${result.filesSkipped} conflicts:${result.conflicts.length} ${result.durationMs}ms`);
       }
       this.emit({
         type: "sync:end",
@@ -441,7 +438,7 @@ var SyncPair = class {
       return result;
     } catch (error) {
       this.state = this.pollTimers.length > 0 ? "watching" /* Watching */ : "idle" /* Idle */;
-      console.error(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
+      log3(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
       this.emit({
         type: "sync:error",
         pairId: this.pairId,
@@ -586,7 +583,7 @@ var SyncPair = class {
       this.options.filter
     );
     if (changes.length > 0) {
-      console.log(`[zen-fs-sync] syncOneWay START direction=${directionLabel} changes=${changes.length}`);
+      log3(`[zen-fs-sync] syncOneWay START direction=${directionLabel} changes=${changes.length}`);
     }
     const newSnap = await this.getSnapshot(src);
     if (newSnap !== null) {
@@ -640,31 +637,31 @@ var SyncPair = class {
             try {
               const tgtContent = await tgt.readFile(tgtPath, "utf-8");
               if (srcContent === tgtContent) {
-                console.log(`[zen-fs-sync] WRITE SKIP (content identical) ${change.path}`);
+                log3(`[zen-fs-sync] WRITE SKIP (content identical) ${change.path}`);
                 filesSkipped++;
                 break;
               }
             } catch {
             }
-            console.log(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath} (${srcContent.length} chars)`);
+            log3(`[zen-fs-sync] WRITE ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath} (${srcContent.length} chars)`);
             await ensureDir(tgt, tgtPath.substring(0, tgtPath.lastIndexOf("/")));
             await tgt.writeFile(tgtPath, srcContent);
             if (isCreated) filesCreated++;
             else filesUpdated++;
           } catch (err) {
-            console.error(`[zen-fs-sync] WRITE FAIL ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath}:`, err);
+            log3(`[zen-fs-sync] WRITE FAIL ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
         }
         case "deleted" /* Deleted */: {
           try {
-            console.log(`[zen-fs-sync] DELETE [${directionLabel}] ${tgtPath}`);
-            console.log(`[SYNC-TRACE] oneway DELETE \u2192 tgt.unlink(${tgtPath}) \u2014 NO exists() check before unlink`);
+            log3(`[zen-fs-sync] DELETE [${directionLabel}] ${tgtPath}`);
+            log3(`[SYNC-TRACE] oneway DELETE \u2192 tgt.unlink(${tgtPath}) \u2014 NO exists() check before unlink`);
             await tgt.unlink(tgtPath);
             filesDeleted++;
           } catch (err) {
-            console.warn(`[zen-fs-sync] DELETE SKIP [${directionLabel}] ${tgtPath}:`, err);
+            log3(`[zen-fs-sync] DELETE SKIP [${directionLabel}] ${tgtPath}:`, err);
             filesSkipped++;
           }
           break;
@@ -692,7 +689,7 @@ var SyncPair = class {
       this.getSnapshot(this.target)
     ]);
     if (srcSnap === null || tgtSnap === null) {
-      console.log(`[zen-fs-sync] syncBidirectional SKIP (one side unreachable)`);
+      log3(`[zen-fs-sync] syncBidirectional SKIP (one side unreachable)`);
       return {
         pairId: this.pairId,
         direction: "bi-directional" /* BiDirectional */,
@@ -729,7 +726,7 @@ var SyncPair = class {
     this.prevTgtSnap = tgtSnap;
     const srcPaths = Array.from(srcSnap.keys()).sort();
     const tgtPaths = Array.from(tgtSnap.keys()).sort();
-    console.log(`[zen-fs-sync] syncBidirectional comparing source=${srcPaths.length} target=${tgtPaths.length}`);
+    log3(`[zen-fs-sync] syncBidirectional comparing source=${srcPaths.length} target=${tgtPaths.length}`);
     let filesCreated = 0;
     let filesUpdated = 0;
     let filesDeleted = 0;
@@ -744,13 +741,13 @@ var SyncPair = class {
         if (oldPrevSrcSnap?.has(path)) {
           try {
             const fullPath = resolvePath(this.root, path);
-            console.log(`[zen-fs-sync] DELETE (src deleted) target ${path}`);
-            console.log(`[SYNC-TRACE] bidirectional DELETE (src deleted) \u2192 target.unlink(${fullPath}) \u2014 NO exists() check before unlink`);
+            log3(`[zen-fs-sync] DELETE (src deleted) target ${path}`);
+            log3(`[SYNC-TRACE] bidirectional DELETE (src deleted) \u2192 target.unlink(${fullPath}) \u2014 NO exists() check before unlink`);
             await this.target.unlink(fullPath);
             filesDeleted++;
             changes.push({ path, type: "deleted" /* Deleted */, targetSnapshot: tgtEntry });
           } catch (err) {
-            console.warn(`[zen-fs-sync] DELETE SKIP (src deleted) target ${path}:`, err);
+            log3(`[zen-fs-sync] DELETE SKIP (src deleted) target ${path}:`, err);
             filesSkipped++;
           }
         } else {
@@ -759,12 +756,12 @@ var SyncPair = class {
             if (wrote) {
               filesCreated++;
               changes.push({ path, type: "created" /* Created */, sourceSnapshot: tgtEntry });
-              console.log(`[zen-fs-sync] COPY target\u2192source ${path}`);
+              log3(`[zen-fs-sync] COPY target\u2192source ${path}`);
             } else {
               filesSkipped++;
             }
           } catch (err) {
-            console.error(`[zen-fs-sync] COPY FAIL target\u2192source ${path}:`, err);
+            log3(`[zen-fs-sync] COPY FAIL target\u2192source ${path}:`, err);
             filesSkipped++;
           }
         }
@@ -772,13 +769,13 @@ var SyncPair = class {
         if (oldPrevTgtSnap?.has(path)) {
           try {
             const fullPath = resolvePath(this.root, path);
-            console.log(`[zen-fs-sync] DELETE (tgt deleted) source ${path}`);
-            console.log(`[SYNC-TRACE] bidirectional DELETE (tgt deleted) \u2192 source.unlink(${fullPath}) \u2014 NO exists() check before unlink`);
+            log3(`[zen-fs-sync] DELETE (tgt deleted) source ${path}`);
+            log3(`[SYNC-TRACE] bidirectional DELETE (tgt deleted) \u2192 source.unlink(${fullPath}) \u2014 NO exists() check before unlink`);
             await this.source.unlink(fullPath);
             filesDeleted++;
             changes.push({ path, type: "deleted" /* Deleted */, sourceSnapshot: srcEntry });
           } catch (err) {
-            console.warn(`[zen-fs-sync] DELETE SKIP (tgt deleted) source ${path}:`, err);
+            log3(`[zen-fs-sync] DELETE SKIP (tgt deleted) source ${path}:`, err);
             filesSkipped++;
           }
         } else {
@@ -787,12 +784,12 @@ var SyncPair = class {
             if (wrote) {
               filesCreated++;
               changes.push({ path, type: "created" /* Created */, sourceSnapshot: srcEntry });
-              console.log(`[zen-fs-sync] COPY source\u2192target ${path}`);
+              log3(`[zen-fs-sync] COPY source\u2192target ${path}`);
             } else {
               filesSkipped++;
             }
           } catch (err) {
-            console.error(`[zen-fs-sync] COPY FAIL source\u2192target ${path}:`, err);
+            log3(`[zen-fs-sync] COPY FAIL source\u2192target ${path}:`, err);
             filesSkipped++;
           }
         }
@@ -808,7 +805,7 @@ var SyncPair = class {
             srcContent = await this.source.readFile(fullPath, "utf-8");
             tgtContent = await this.target.readFile(fullPath, "utf-8");
           } catch (err) {
-            console.error(`[zen-fs-sync] CONTENT READ FAIL ${path}:`, err);
+            log3(`[zen-fs-sync] CONTENT READ FAIL ${path}:`, err);
             filesSkipped++;
             continue;
           }
@@ -816,7 +813,7 @@ var SyncPair = class {
             const oldestMtime = Math.min(srcEntry.mtimeMs, tgtEntry.mtimeMs);
             await this.normalizeMtimeBoth(path, srcContent, oldestMtime);
             filesSkipped++;
-            console.log(`[zen-fs-sync] MTIME NORMALIZE ${path} \u2192 mtime=${oldestMtime} (content identical, was src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs})`);
+            log3(`[zen-fs-sync] MTIME NORMALIZE ${path} \u2192 mtime=${oldestMtime} (content identical, was src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs})`);
           } else {
             const newerIsSource = srcEntry.mtimeMs > tgtEntry.mtimeMs;
             const fromFs = newerIsSource ? this.source : this.target;
@@ -827,12 +824,12 @@ var SyncPair = class {
               if (wrote) {
                 filesUpdated++;
                 changes.push({ path, type: "modified" /* Modified */, sourceSnapshot: newerIsSource ? srcEntry : tgtEntry, targetSnapshot: newerIsSource ? tgtEntry : srcEntry });
-                console.log(`[zen-fs-sync] UPDATE ${fromLabel} ${path} (mtime=${newerIsSource ? srcEntry.mtimeMs : tgtEntry.mtimeMs} > ${newerIsSource ? tgtEntry.mtimeMs : srcEntry.mtimeMs})`);
+                log3(`[zen-fs-sync] UPDATE ${fromLabel} ${path} (mtime=${newerIsSource ? srcEntry.mtimeMs : tgtEntry.mtimeMs} > ${newerIsSource ? tgtEntry.mtimeMs : srcEntry.mtimeMs})`);
               } else {
                 filesSkipped++;
               }
             } catch (err) {
-              console.error(`[zen-fs-sync] UPDATE FAIL ${fromLabel} ${path}:`, err);
+              log3(`[zen-fs-sync] UPDATE FAIL ${fromLabel} ${path}:`, err);
               filesSkipped++;
             }
           }
@@ -858,12 +855,12 @@ var SyncPair = class {
           await this.writeFileBoth(path, resolved.content);
           filesUpdated++;
           changes.push({ path, type: "modified" /* Modified */, sourceSnapshot: { ...srcEntry, mtimeMs: Date.now() }, targetSnapshot: srcEntry });
-          console.log(`[zen-fs-sync] CONFLICT ${path} resolved=${resolved.strategy}`);
+          log3(`[zen-fs-sync] CONFLICT ${path} resolved=${resolved.strategy}`);
         }
       }
     }
     const durationMs = Date.now() - startTime;
-    console.log(`[zen-fs-sync] syncBidirectional END pairId=${this.pairId} +${filesCreated}/~${filesUpdated}/-${filesDeleted} ${durationMs}ms`);
+    log3(`[zen-fs-sync] syncBidirectional END pairId=${this.pairId} +${filesCreated}/~${filesUpdated}/-${filesDeleted} ${durationMs}ms`);
     return {
       pairId: this.pairId,
       direction: "bi-directional" /* BiDirectional */,
