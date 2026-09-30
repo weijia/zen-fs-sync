@@ -167,6 +167,10 @@ async function walkFiles(fs, root, filter) {
         await visit(fullPath);
       } else if (isFile(stat)) {
         if (!isPathAllowed(relPath, filter)) continue;
+        if (relPath.endsWith(".mtime.mtime")) {
+          console.warn(`[zen-fs-sync] skipping nested mtime sidecar (won't sync): ${relPath}`);
+          continue;
+        }
         results.push(relPath);
       }
     }
