@@ -139,8 +139,14 @@ export async function walkFiles(
       if (isDirectory(stat)) {
         await visit(fullPath);
       } else if (isFile(stat)) {
-        if (!isPathAllowed(relPath, filter)) continue;
-        results.push(relPath);
+      	if (!isPathAllowed(relPath, filter)) continue;
+      	// Never sync a nested mtime sidecar (`*.mtime.mtime`) — a pathological
+      	// artifact that must not be propagated across backends.
+      	if (relPath.endsWith('.mtime.mtime')) {
+      		console.warn(`[zen-fs-sync] skipping nested mtime sidecar (won't sync): ${relPath}`);
+      		continue;
+      	}
+      	results.push(relPath);
       }
     }
   }
