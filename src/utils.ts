@@ -104,6 +104,19 @@ function simpleGlobMatch(str: string, pattern: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * Describe a backend FS for diagnostics.
+ *
+ * Prefer the backend's own `backendName` (e.g. 'RemoteStorage@5apps'); fall back
+ * to its constructor name so a warning can always be traced back to the concrete
+ * FS that produced an offending path, even if the backend omits `backendName`.
+ */
+function describeFs(fs: SyncableFS): string {
+  if (fs.backendName) return fs.backendName;
+  const ctorName = (fs as { constructor?: { name?: string } }).constructor?.name;
+  return ctorName && ctorName !== 'Object' ? ctorName : 'unknown';
+}
+
+/**
  * 递归遍历文件系统，收集所有文件的相对路径。
  * 返回的路径是相对于 root 的、以 / 开头的路径。
  */
@@ -139,14 +152,22 @@ export async function walkFiles(
       if (isDirectory(stat)) {
         await visit(fullPath);
       } else if (isFile(stat)) {
-      	if (!isPathAllowed(relPath, filter)) continue;
-      	// Never sync a nested mtime sidecar (`*.mtime.mtime`) — a pathological
-      	// artifact that must not be propagated across backends.
-      	if (relPath.endsWith('.mtime.mtime')) {
-      		console.warn(`[zen-fs-sync] skipping nested mtime sidecar (won't sync): ${relPath}`);
-      		continue;
-      	}
-      	results.push(relPath);
+        if (!isPathAllowed(relPath, filter)) continue;
+
+        // A mtime sidecar is backend-internal metadata: a backend must hide it
+        // from readdir()/createSnapshot(). If one surfaces here, name the backend
+        // that produced it so the leak can be traced, and never propagate it.
+        // Covers both `.foo.mtime` and the pathological `.foo.mtime.mtime`.
+        if (relPath.endsWith('.mtime')) {
+          console.warn(
+            `[zen-fs-sync] mtime sidecar leaked from backend "${describeFs(fs)}" ` +
+              `- its readdir()/createSnapshot() must filter sidecars; ` +
+              `skipping ${fullPath} (rel ${relPath})`,
+          );
+          continue;
+        }
+
+        results.push(relPath);
       }
     }
   }

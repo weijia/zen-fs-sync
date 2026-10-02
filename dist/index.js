@@ -142,6 +142,11 @@ function simpleGlobMatch(str, pattern) {
   );
   return regex.test(str);
 }
+function describeFs(fs) {
+  if (fs.backendName) return fs.backendName;
+  const ctorName = fs.constructor?.name;
+  return ctorName && ctorName !== "Object" ? ctorName : "unknown";
+}
 async function walkFiles(fs, root, filter) {
   const results = [];
   const normalizedRoot = normalizePath(root);
@@ -167,8 +172,10 @@ async function walkFiles(fs, root, filter) {
         await visit(fullPath);
       } else if (isFile(stat)) {
         if (!isPathAllowed(relPath, filter)) continue;
-        if (relPath.endsWith(".mtime.mtime")) {
-          console.warn(`[zen-fs-sync] skipping nested mtime sidecar (won't sync): ${relPath}`);
+        if (relPath.endsWith(".mtime")) {
+          console.warn(
+            `[zen-fs-sync] mtime sidecar leaked from backend "${describeFs(fs)}" - its readdir()/createSnapshot() must filter sidecars; skipping ${fullPath} (rel ${relPath})`
+          );
           continue;
         }
         results.push(relPath);
