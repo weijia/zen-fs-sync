@@ -7,8 +7,11 @@ import {
   deepMergeJSON,
   tryParseJSON,
   isJsonPath,
+  walkFiles,
+  collectDirectories,
 } from '../src/utils';
 import { ChangeType, type FileSnapshot } from '../src/types';
+import { MockFS } from './helpers/mock-fs';
 
 // ---------------------------------------------------------------------------
 // normalizePath
@@ -264,5 +267,49 @@ describe('isJsonPath', () => {
   it('非 .json 返回 false', () => {
     expect(isJsonPath('/config/db.yaml')).toBe(false);
     expect(isJsonPath('/config/db')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// walkFiles —— 内部文件（.keep / .mtime）不得进入快照
+// ---------------------------------------------------------------------------
+describe('walkFiles', () => {
+  it('跳过后端泄漏出来的 .keep 与 .mtime 内部文件', async () => {
+    // MockFS 把这些都当成普通文件返回，用来模拟"后端未隐藏内部文件"的退化场景。
+    // 即便后端漏出了这些文件，walkFiles（同步引擎的安全网）也必须跳过它们，
+    // 绝不能把 .keep / .mtime 当成用户文件去同步。
+    const fs = new MockFS({
+      '/app.json': '{"a":1}',
+      '/sub/.keep': '',
+      '/sub/note.txt': 'hi',
+      '/sub/.note.txt.mtime': '1700000000123',
+    });
+
+    const files = await walkFiles(fs, '/');
+
+    expect(files).toContain('/app.json');
+    expect(files).toContain('/sub/note.txt');
+    expect(files).not.toContain('/sub/.keep');
+    expect(files).not.toContain('/sub/.note.txt.mtime');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collectDirectories —— 为跨后端保活空目录收集目录清单
+// ---------------------------------------------------------------------------
+describe('collectDirectories', () => {
+  it('返回源端所有目录（含空目录），不返回根与内部文件', async () => {
+    const fs = new MockFS();
+    await fs.mkdir('/emptydir');
+    await fs.writeFile('/app.json', '{}');
+    await fs.mkdir('/nested');
+    await fs.mkdir('/nested/deep'); // 空嵌套目录
+
+    const dirs = await collectDirectories(fs, '/');
+
+    expect(dirs).toContain('/emptydir');
+    expect(dirs).toContain('/nested');
+    expect(dirs).toContain('/nested/deep');
+    expect(dirs).not.toContain('/'); // 根目录跳过
   });
 });

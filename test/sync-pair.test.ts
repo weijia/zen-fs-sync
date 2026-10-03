@@ -277,3 +277,53 @@ describe('ZenFSSync', () => {
     expect(engine.listPairs()).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 空目录保活：Git / RemoteStorage 无法存储空目录，sync 引擎必须显式 mkdir
+// （zen-fs-sync/docs/SyncableFS.md §2）
+// ---------------------------------------------------------------------------
+describe('SyncPair: 空目录保活', () => {
+  it('单向同步：目标端保留源端的空目录', async () => {
+    const source = new MockFS();
+    await source.mkdir('/emptydir');
+    await source.writeFile('/app.json', '{}');
+    const target = new MockFS();
+
+    const pair = new SyncPair(source, target, { direction: SyncDirection.OneWay }, '/');
+    await pair.sync();
+
+    expect(target.getContent('/app.json')).toBe('{}');
+    // 空目录本身没有文件、进不了快照，必须靠 mkdir 保活
+    expect(await target.exists('/emptydir')).toBe(true);
+  });
+
+  it('双向同步：两端各自保留对方的空目录', async () => {
+    const src = new MockFS();
+    await src.mkdir('/fromSrc');
+    await src.writeFile('/a.json', '1');
+    const tgt = new MockFS();
+    await tgt.mkdir('/fromTgt');
+    await tgt.writeFile('/b.json', '2');
+
+    const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
+    await pair.sync();
+
+    expect(await tgt.exists('/fromSrc')).toBe(true);
+    expect(await src.exists('/fromTgt')).toBe(true);
+  });
+
+  it('空目录在快照中不会出现、也不会被同步成文件', async () => {
+    const source = new MockFS();
+    await source.mkdir('/emptydir');
+    const target = new MockFS();
+
+    const pair = new SyncPair(source, target, { direction: SyncDirection.OneWay }, '/');
+    const result = await pair.sync();
+
+    // 空目录不产生任何文件变更
+    expect(result.filesCreated).toBe(0);
+    expect(result.filesUpdated).toBe(0);
+    // 但目录本身被保活
+    expect(await target.exists('/emptydir')).toBe(true);
+  });
+});

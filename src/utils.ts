@@ -167,7 +167,73 @@ export async function walkFiles(
           continue;
         }
 
+        // A `.keep` placeholder is backend-internal metadata that keeps
+        // otherwise-empty directories alive in Git/RemoteStorage. A backend must
+        // hide it from readdir(); if it leaks here, name the backend and skip it.
+        if (relPath === '/.keep' || relPath.endsWith('/.keep')) {
+          console.warn(
+            `[zen-fs-sync] '.keep' placeholder leaked from backend "${describeFs(fs)}" ` +
+              `- its readdir() must filter the internal placeholder; ` +
+              `skipping ${fullPath} (rel ${relPath})`,
+          );
+          continue;
+        }
+
         results.push(relPath);
+      }
+    }
+  }
+
+  await visit(normalizedRoot);
+  return results;
+}
+
+/**
+ * Recursively collect all directory paths (relative to `root`) that exist on
+ * `fs`. Used to preserve empty directories across backends.
+ *
+ * A backend that cannot store empty directories (Git, RemoteStorage) keeps a
+ * directory alive with an internal `.keep` placeholder that is hidden from
+ * callers (see zen-fs-sync/docs/SyncableFS.md §1/§2). Because the sync snapshot
+ * is file-based, empty directories are not represented, so the sync engine must
+ * explicitly `mkdir` each source directory on the target. The target's own
+ * `mkdir` then produces its own (hidden) placeholder.
+ *
+ * Internal files (`.mtime` sidecars, `.keep` placeholders) are already hidden
+ * by the backend's `readdir()`, so they never appear here.
+ */
+export async function collectDirectories(
+  fs: SyncableFS,
+  root: string,
+  filter?: SyncFilter,
+): Promise<string[]> {
+  const results: string[] = [];
+  const normalizedRoot = normalizePath(root);
+
+  async function visit(dir: string): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      return; // 目录不存在或无权限
+    }
+
+    for (const entry of entries) {
+      if (entry === '.zenfs-sync') continue;
+
+      const fullPath = resolvePath(dir, entry);
+      let relPath = fullPath.slice(normalizedRoot.length) || '/';
+      if (!relPath.startsWith('/')) relPath = '/' + relPath;
+
+      let stat;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {
+        continue;
+      }
+      if (isDirectory(stat)) {
+        if (isPathAllowed(relPath, filter)) results.push(relPath);
+        await visit(fullPath);
       }
     }
   }

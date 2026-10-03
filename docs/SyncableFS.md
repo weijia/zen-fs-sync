@@ -34,6 +34,53 @@ interface SyncableFS {
 
 ---
 
+## 后端实现契约（行为不变量）
+
+> 本节规定**任何**实现 `SyncableFS` 的后端都必须满足的行为约束，是同步引擎、`zen-fs-cache`、`zen-fs-config` 正确工作的前提。方法级的逐条说明见后续章节。
+>
+> 这些约束是**条件性**的：只有当底层存储确实存在某项能力缺口、后端因而引入了内部实现文件时，才需要遵守对应的"隐藏 / 自建"要求。具备原生能力的文件系统（如 Node.js `fs/promises`、IndexedDB）不需要、也不应有这些内部文件。
+
+### 1. 内部实现文件必须对调用者隐藏
+
+部分后端为了弥补底层存储的能力缺口，会在内部创建"实现文件"，例如：
+
+- 为了在无原生毫秒级 mtime 的存储上保留精确修改时间而写的 `.mtime` sidecar；
+- 为了在**无法存储空目录**的存储上让目录存活而写的占位文件（如 `.keep`）。
+
+这些文件**不是用户文件**，后端**必须**在以下操作中将其对调用者隐藏，绝不能泄漏到上层，也不能被同步引擎当作用户文件处理：
+
+- `readdir`：返回的条目数组中过滤掉内部文件；
+- `stat`：调用者不会去 stat 内部文件（因为 `readdir` 不暴露它），后端也不应把它以用户文件形态呈现；
+- `createSnapshot`：快照中不得包含内部文件；
+- `unlink` / `rmdir`：内部文件由后端自身在对应的写 / 删生命周期里维护，调用者无需也无法直接操作它。
+
+> **并非所有文件系统都需要这些内部文件。** 本地文件系统（Node.js `fs/promises`、IndexedDB）具备原生 mtime、能原生存储空目录，因此既不需要 `.mtime` sidecar，也不需要目录占位文件。上述"隐藏"要求仅在后端**确实使用了**内部文件时才适用——没有内部文件的后端自然无需过滤。
+
+### 2. 空目录的保留
+
+部分底层存储（Git 类如 Gitee/GitHub、RemoteStorage）**无法表达空目录**：目录只是文件路径的前缀，一个没有任何文件的目录在该存储中根本没有载体，列举或同步时就会消失。
+
+这类后端**必须**：
+
+- 在 `mkdir` 中创建一个内部占位文件（典型命名 `.keep`）以保证目录存活；
+- 在 `rmdir` 中清理该占位文件；
+- 该占位文件按 §1 规则对调用者隐藏。
+
+**同步引擎保留空目录的方式是：在目标端显式调用 `mkdir`，而不是把占位文件当作用户文件跨端同步。** 因此：
+
+- 每个后端各自维护自己的占位文件（内容 / 命名可以不同，例如 Gitee 用 `\n`、RemoteStorage 用 `''`），互不干涉；
+- 占位文件永远不会跨端传输内容或 mtime，也就不会产生无意义的冲突或 mtime 拉锯。
+
+> 能原生存储空目录的后端（IndexedDB、本地 FS）无需占位文件，也不必在 `mkdir` / `rmdir` 中处理它。
+>
+> 后端**不应**假设占位文件会被当作用户文件同步——空目录的存活依赖同步引擎的 `mkdir`，而非占位文件的同步。（当前个别实现仍依赖占位文件被同步来保活空目录，属于待修复的偏差，不应作为契约依据。）
+
+### 3. mtime 精度（可选能力）
+
+部分后端没有原生毫秒级 mtime（如 Gitee/GitHub 的 commit 时间只有秒级精度，且不等于源文件修改时间）。这类后端应通过可选方法 `writeFileWithMtime` 把精确 mtime 持久化到内部 sidecar，并按 §1 规则隐藏（见该方法说明）。有原生 mtime 的后端无需实现该方法，也无需 sidecar。
+
+---
+
 ## 必需方法
 
 ### `readdir(path: string): Promise<string[]>`
@@ -44,6 +91,7 @@ interface SyncableFS {
 - **返回**: 目录条目名称数组（不含路径前缀，仅文件名/子目录名）
 - **异常**: 目录不存在或无权限时抛出异常
 - **同步引擎用途**: 用于 `buildSnapshot()` 递归遍历文件树，以及 `ensureDir()` 检查目录是否存在
+- **契约**: 返回结果中**不得包含后端内部实现文件**（如 `.mtime` sidecar、`.keep` 占位文件），见《后端实现契约》§1
 
 ```typescript
 const entries = await fs.readdir('/app_data/configs');
@@ -107,7 +155,8 @@ const stat = await fs.stat('/config.json');
 创建目录。
 
 - **参数**: `path` — 目录路径；`options.recursive` — 是否递归创建父目录
-- **同步引擎用途**: `ensureDir()` 在写入文件前递归创建目录
+- **同步引擎用途**: `ensureDir()` 在写入文件前递归创建目录；也是同步引擎**保留空目录**的手段（见《后端实现契约》§2）
+- **契约**: 无法原生存储空目录的后端（如 Git 类、RemoteStorage）应在内部创建并隐藏占位文件（如 `.keep`）以保证目录存活，见《后端实现契约》§2
 
 ```typescript
 await fs.mkdir('/app_data/configs/new-app', { recursive: true });
@@ -150,8 +199,8 @@ const fs: SyncableFS = {
 
 - **参数**: `path` — 文件路径；`data` — 内容；`mtimeMs` — 修改时间（毫秒时间戳）
 - **同步引擎用途**: `copyFile()` 时优先使用此方法保留源文件的真实 mtime，而非使用同步时间
-- **何时实现**: 后端原生 mtime 不精确时（如 Gitee/GitHub 的 commit 时间只有秒级精度且不等于源文件修改时间）。实现方式通常是写入 `.mtime` sidecar 文件
-- **回退**: 未实现时同步引擎使用普通 `writeFile()`，mtime 由后端自行决定（如 IndexedDB/InMemory 使用 `Date.now()`）
+- **何时实现**: 后端原生 mtime 不精确时（如 Gitee/GitHub 的 commit 时间只有秒级精度且不等于源文件修改时间）。实现方式通常是写入 `.mtime` sidecar 文件，**该 sidecar 必须按《后端实现契约》§1 对调用者隐藏**（在 `readdir` / `createSnapshot` 中过滤，调用者不会直接读写它）
+- **回退**: 未实现时同步引擎使用普通 `writeFile()`，mtime 由后端自行决定（如 IndexedDB/InMemory 使用 `Date.now()`）。有原生 mtime 的后端无需实现此方法，也无需 sidecar
 
 ```typescript
 // RemoteStorage 后端的实现示例
@@ -215,6 +264,7 @@ async shouldSync(): Promise<boolean> {
 - **参数**: `root` — 同步根路径；`filter` — 路径过滤器
 - **返回**: `Map<string, FileSnapshot>` — 相对路径 → `{path, size, mtimeMs}`；`null` — 文件系统不可达
 - **同步引擎用途**: `getSnapshot()` 优先调用此方法，用于增量变更检测和双向同步的快照对比
+- **契约**: 快照中**不得包含后端内部实现文件**（如 `.mtime` sidecar、`.keep` 占位文件），见《后端实现契约》§1。空目录不需要、也不应以占位文件形式出现在快照中（空目录由 `mkdir` 保活，见 §2）
 - **何时实现**: 能提供比通用 `walkFiles + stat` 更高效快照方法的后端应实现
   - Gitee/GitHub 后端可使用 Git tree API 一次性获取所有文件元信息
   - IndexedDB 后端可使用 `getAll()` 批量查询而非逐个 stat
