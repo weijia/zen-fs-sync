@@ -822,9 +822,10 @@ var SyncPair = class {
           }
           if (srcContent === tgtContent) {
             const oldestMtime = Math.min(srcEntry.mtimeMs, tgtEntry.mtimeMs);
+            const keptOn = srcEntry.mtimeMs <= tgtEntry.mtimeMs ? "src" : "tgt";
             await this.normalizeMtimeBoth(path, srcContent, oldestMtime);
             filesSkipped++;
-            log3(`[zen-fs-sync] MTIME NORMALIZE ${path} \u2192 mtime=${oldestMtime} (content identical, was src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs})`);
+            log3(`[zen-fs-sync] MTIME NORMALIZE ${path} \u2192 mtime=${oldestMtime} (content identical; src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs}; kept=oldest(${keptOn}); real mtime stored in sidecar .${path}.mtime)`);
           } else {
             const newerIsSource = srcEntry.mtimeMs > tgtEntry.mtimeMs;
             const fromFs = newerIsSource ? this.source : this.target;

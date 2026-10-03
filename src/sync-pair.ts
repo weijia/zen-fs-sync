@@ -634,11 +634,19 @@ export class SyncPair {
           }
 
           if (srcContent === tgtContent) {
-            // Content identical but mtime differs — normalize mtime to oldest
+            // Content identical but mtime differs — normalize mtime to oldest.
+            // NOTE: the Gitee Contents API writes a commit at server "now", so the
+            // data file's git lastModified will be ~now, NOT oldestMtime. The real
+            // mtime is preserved in the sidecar `.${path}.mtime` (content=oldestMtime)
+            // and in the in-memory mtimeCache (fromSidecar:true). The next snapshot
+            // reads mtime from that sidecar, so the value seen by sync IS oldestMtime.
             const oldestMtime = Math.min(srcEntry.mtimeMs, tgtEntry.mtimeMs);
+            const keptOn = srcEntry.mtimeMs <= tgtEntry.mtimeMs ? 'src' : 'tgt';
             await this.normalizeMtimeBoth(path, srcContent, oldestMtime);
             filesSkipped++;
-            log(`[zen-fs-sync] MTIME NORMALIZE ${path} → mtime=${oldestMtime} (content identical, was src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs})`);
+            log(`[zen-fs-sync] MTIME NORMALIZE ${path} → mtime=${oldestMtime} ` +
+              `(content identical; src=${srcEntry.mtimeMs} tgt=${tgtEntry.mtimeMs}; ` +
+              `kept=oldest(${keptOn}); real mtime stored in sidecar .${path}.mtime)`);
           } else {
             // Content differs — copy newer side to older side
             const newerIsSource = srcEntry.mtimeMs > tgtEntry.mtimeMs;
