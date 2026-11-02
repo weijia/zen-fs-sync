@@ -363,6 +363,17 @@ declare class SyncPair {
      */
     private getSnapshot;
     /**
+     * Preserve empty directories across backends (zen-fs-sync/docs/SyncableFS.md §2).
+     *
+     * A backend that cannot store empty directories (Git, RemoteStorage) keeps a
+     * directory alive with an internal `.keep` placeholder that is hidden from
+     * callers. Because the sync snapshot is file-based, empty directories are not
+     * represented, so the sync engine must explicitly `mkdir` each source
+     * directory on the target. The target's own `mkdir` then produces its own
+     * (hidden) placeholder. Best-effort: failures are logged, never thrown.
+     */
+    private preserveDirectories;
+    /**
      * Compare two snapshots for equality (same paths, same size, same mtime).
      * Returns true if they are identical, false otherwise.
      * Undefined prev means "no previous snapshot" → always returns false

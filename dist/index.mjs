@@ -143,7 +143,43 @@ async function walkFiles(fs, root, filter) {
           );
           continue;
         }
+        if (relPath === "/.keep" || relPath.endsWith("/.keep")) {
+          console.warn(
+            `[zen-fs-sync] '.keep' placeholder leaked from backend "${describeFs(fs)}" - its readdir() must filter the internal placeholder; skipping ${fullPath} (rel ${relPath})`
+          );
+          continue;
+        }
         results.push(relPath);
+      }
+    }
+  }
+  await visit(normalizedRoot);
+  return results;
+}
+async function collectDirectories(fs, root, filter) {
+  const results = [];
+  const normalizedRoot = normalizePath(root);
+  async function visit(dir) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry === ".zenfs-sync") continue;
+      const fullPath = resolvePath(dir, entry);
+      let relPath = fullPath.slice(normalizedRoot.length) || "/";
+      if (!relPath.startsWith("/")) relPath = "/" + relPath;
+      let stat;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {
+        continue;
+      }
+      if (isDirectory(stat)) {
+        if (isPathAllowed(relPath, filter)) results.push(relPath);
+        await visit(fullPath);
       }
     }
   }
@@ -155,7 +191,12 @@ async function buildSnapshot(fs, root, filter) {
   const fsName = fs.backendName || "unknown";
   try {
     await fs.readdir(normalizedRoot);
-  } catch {
+  } catch (err) {
+    const e = err;
+    if (e && (e.name === "DirectoryNotFoundError" || e.code === "ENOENT")) {
+      log(`buildSnapshot(${fsName}): root missing, treating as empty`);
+      return /* @__PURE__ */ new Map();
+    }
     log(`buildSnapshot(${fsName}): unreachable, returning null`);
     return null;
   }
@@ -644,6 +685,7 @@ var SyncPair = class {
         }
       }
     }
+    await this.preserveDirectories(src, tgt);
     return {
       pairId: this.pairId,
       direction: this.options.direction,
@@ -836,6 +878,8 @@ var SyncPair = class {
         }
       }
     }
+    await this.preserveDirectories(this.source, this.target);
+    await this.preserveDirectories(this.target, this.source);
     const durationMs = Date.now() - startTime;
     log3(`[zen-fs-sync] syncBidirectional END pairId=${this.pairId} +${filesCreated}/~${filesUpdated}/-${filesDeleted} ${durationMs}ms`);
     return {
@@ -863,6 +907,28 @@ var SyncPair = class {
       return fs.createSnapshot(this.root, this.options.filter);
     }
     return buildSnapshot(fs, this.root, this.options.filter);
+  }
+  /**
+   * Preserve empty directories across backends (zen-fs-sync/docs/SyncableFS.md §2).
+   *
+   * A backend that cannot store empty directories (Git, RemoteStorage) keeps a
+   * directory alive with an internal `.keep` placeholder that is hidden from
+   * callers. Because the sync snapshot is file-based, empty directories are not
+   * represented, so the sync engine must explicitly `mkdir` each source
+   * directory on the target. The target's own `mkdir` then produces its own
+   * (hidden) placeholder. Best-effort: failures are logged, never thrown.
+   */
+  async preserveDirectories(source, target) {
+    try {
+      const dirs = await collectDirectories(source, this.root, this.options.filter);
+      for (const relDir of dirs) {
+        if (relDir === "/") continue;
+        const fullDir = resolvePath(this.root, relDir);
+        await ensureDir(target, fullDir);
+      }
+    } catch (err) {
+      log3(`[zen-fs-sync] preserveDirectories FAIL: ${err}`);
+    }
   }
   /**
    * Compare two snapshots for equality (same paths, same size, same mtime).
