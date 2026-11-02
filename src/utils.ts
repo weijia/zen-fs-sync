@@ -261,7 +261,14 @@ export async function buildSnapshot(
   // so callers can skip this sync cycle instead of treating it as empty.
   try {
     await fs.readdir(normalizedRoot);
-  } catch {
+  } catch (err) {
+    // 目录不存在（HTTP 404 / ENOENT）是正常的初始状态，应视为空目录继续同步；
+    // 否则首次上传会因远端目录尚未创建而被误判为 unreachable 并整条跳过。
+    const e = err as { name?: string; code?: string } | null;
+    if (e && (e.name === 'DirectoryNotFoundError' || e.code === 'ENOENT')) {
+      log(`buildSnapshot(${fsName}): root missing, treating as empty`);
+      return new Map();
+    }
     log(`buildSnapshot(${fsName}): unreachable, returning null`);
     return null;
   }
