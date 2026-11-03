@@ -26,6 +26,7 @@ import {
   type ResolvedSyncOptions,
   type SyncPairStatus,
   type SyncResult,
+  type SyncFileError,
   type SyncableFS,
 } from './types';
 import { IncrementalDetector } from './detector/incremental';
@@ -54,6 +55,7 @@ export class SyncPair {
 
   private state: SyncPairState = SyncPairState.Idle;
   private lastResult?: SyncResult;
+  private lastError?: { message: string; timestamp: number };
   private lastCheckTime?: number;
   private totalSyncs = 0;
   // 轮询定时器列表（远程 shouldSync 轮询，或两端都不支持变更检测时的兜底轮询）
@@ -157,6 +159,10 @@ export class SyncPair {
 
       result.durationMs = Date.now() - startTime;
       this.lastResult = result;
+      // 文件级失败也记入 lastError（干净同步不清除，保持"最后错误"语义）
+      if (result.errors && result.errors.length > 0) {
+        this.lastError = { message: result.errors[0].message, timestamp: result.timestamp };
+      }
       this.totalSyncs++;
       // 有轮询定时器则保持 Watching，否则回到 Idle
       this.state = this.pollTimers.length > 0 ? SyncPairState.Watching : SyncPairState.Idle;
@@ -178,6 +184,7 @@ export class SyncPair {
     } catch (error) {
       // 有轮询定时器则保持 Watching，否则回到 Idle
       this.state = this.pollTimers.length > 0 ? SyncPairState.Watching : SyncPairState.Idle;
+      this.lastError = { message: error instanceof Error ? error.message : String(error), timestamp: Date.now() };
       log(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
       this.emit({
         type: 'sync:error',
@@ -297,6 +304,7 @@ export class SyncPair {
       state: this.state,
       lastResult: this.lastResult,
       lastCheckTime: this.lastCheckTime,
+      lastError: this.lastError,
       // 是否正在 watch：有轮询定时器或处于 Watching 状态
       watching: this.pollTimers.length > 0 || this.state === SyncPairState.Watching,
       totalSyncs: this.totalSyncs,
@@ -381,6 +389,7 @@ export class SyncPair {
     let filesDeleted = 0;
     let filesSkipped = 0;
     const conflicts: ConflictEntry[] = [];
+    const errors: SyncFileError[] = [];
 
     for (const change of changes) {
       const srcPath = resolvePath(this.root, change.path);
@@ -448,6 +457,7 @@ export class SyncPair {
             else filesUpdated++;
           } catch (err) {
             log(`[zen-fs-sync] WRITE FAIL ${change.type} [${directionLabel}] ${srcPath} → ${tgtPath}:`, err);
+            errors.push({ path: change.path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
           break;
@@ -461,6 +471,7 @@ export class SyncPair {
             filesDeleted++;
           } catch (err) {
             log(`[zen-fs-sync] DELETE SKIP [${directionLabel}] ${tgtPath}:`, err);
+            errors.push({ path: change.path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
           break;
@@ -480,6 +491,7 @@ export class SyncPair {
       filesDeleted,
       filesSkipped,
       conflicts,
+      errors,
       changes,
       durationMs: 0, // 由 sync() 方法填充
     };
@@ -542,6 +554,7 @@ export class SyncPair {
     let filesSkipped = 0;
     const conflicts: ConflictEntry[] = [];
     const changes: ChangeEntry[] = [];
+    const errors: SyncFileError[] = [];
 
     const allPaths = new Set([...srcSnap.keys(), ...tgtSnap.keys()]);
 
@@ -565,6 +578,7 @@ export class SyncPair {
             changes.push({ path, type: ChangeType.Deleted, targetSnapshot: tgtEntry });
           } catch (err) {
             log(`[zen-fs-sync] DELETE SKIP (src deleted) target ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         } else {
@@ -580,6 +594,7 @@ export class SyncPair {
             }
           } catch (err) {
             log(`[zen-fs-sync] COPY FAIL target→source ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         }
@@ -599,6 +614,7 @@ export class SyncPair {
             changes.push({ path, type: ChangeType.Deleted, sourceSnapshot: srcEntry });
           } catch (err) {
             log(`[zen-fs-sync] DELETE SKIP (tgt deleted) source ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         } else {
@@ -614,6 +630,7 @@ export class SyncPair {
             }
           } catch (err) {
             log(`[zen-fs-sync] COPY FAIL source→target ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         }
@@ -633,6 +650,7 @@ export class SyncPair {
             tgtContent = await this.target.readFile(fullPath, 'utf-8');
           } catch (err) {
             log(`[zen-fs-sync] CONTENT READ FAIL ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
             continue;
           }
@@ -668,6 +686,7 @@ export class SyncPair {
               }
             } catch (err) {
               log(`[zen-fs-sync] UPDATE FAIL ${fromLabel} ${path}:`, err);
+              errors.push({ path, message: err instanceof Error ? err.message : String(err) });
               filesSkipped++;
             }
           }
@@ -712,6 +731,7 @@ export class SyncPair {
       filesDeleted,
       filesSkipped,
       conflicts,
+      errors,
       changes,
       durationMs,
     };

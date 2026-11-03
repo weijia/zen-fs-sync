@@ -294,10 +294,20 @@ export interface SyncResult {
   filesSkipped: number;
   /** 冲突列表 */
   conflicts: ConflictEntry[];
+  /** 文件级失败明细（写入/复制/删除失败被跳过的文件） */
+  errors?: SyncFileError[];
   /** 变更明细 */
   changes: ChangeEntry[];
   /** 耗时（ms） */
   durationMs: number;
+}
+
+/** 单个文件的同步失败信息 */
+export interface SyncFileError {
+  /** 相对于同步根目录的路径 */
+  path: string;
+  /** 失败原因 */
+  message: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +340,11 @@ export interface SyncPairStatus {
   lastResult?: SyncResult;
   /** 最近一次检查同步的时间（即使无变更） */
   lastCheckTime?: number;
+  /** 最近一次同步失败（pair 级异常或文件级失败）的时间与原因；干净同步不清除 */
+  lastError?: {
+    message: string;
+    timestamp: number;
+  };
   /** 是否正在 watch */
   watching: boolean;
   /** 同步次数累计 */
