@@ -33,6 +33,10 @@
     "virtual-fs"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weijia/zen-fs-sync.git"
+  },
   "peerDependencies": {
     "@zenfs/core": ">=0.6.0"
   },
