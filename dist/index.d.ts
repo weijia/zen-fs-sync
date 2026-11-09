@@ -238,10 +238,19 @@ interface SyncResult {
     filesSkipped: number;
     /** 冲突列表 */
     conflicts: ConflictEntry[];
+    /** 文件级失败明细（写入/复制/删除失败被跳过的文件） */
+    errors?: SyncFileError[];
     /** 变更明细 */
     changes: ChangeEntry[];
     /** 耗时（ms） */
     durationMs: number;
+}
+/** 单个文件的同步失败信息 */
+interface SyncFileError {
+    /** 相对于同步根目录的路径 */
+    path: string;
+    /** 失败原因 */
+    message: string;
 }
 /** 同步对的运行时状态 */
 declare enum SyncPairState {
@@ -268,6 +277,11 @@ interface SyncPairStatus {
     lastResult?: SyncResult;
     /** 最近一次检查同步的时间（即使无变更） */
     lastCheckTime?: number;
+    /** 最近一次同步失败（pair 级异常或文件级失败）的时间与原因；干净同步不清除 */
+    lastError?: {
+        message: string;
+        timestamp: number;
+    };
     /** 是否正在 watch */
     watching: boolean;
     /** 同步次数累计 */
@@ -308,6 +322,7 @@ declare class SyncPair {
     private readonly resolver;
     private state;
     private lastResult?;
+    private lastError?;
     private lastCheckTime?;
     private totalSyncs;
     private pollTimers;
@@ -362,17 +377,6 @@ declare class SyncPair {
      * available, falling back to the generic buildSnapshot() (walkFiles + stat).
      */
     private getSnapshot;
-    /**
-     * Preserve empty directories across backends (zen-fs-sync/docs/SyncableFS.md §2).
-     *
-     * A backend that cannot store empty directories (Git, RemoteStorage) keeps a
-     * directory alive with an internal `.keep` placeholder that is hidden from
-     * callers. Because the sync snapshot is file-based, empty directories are not
-     * represented, so the sync engine must explicitly `mkdir` each source
-     * directory on the target. The target's own `mkdir` then produces its own
-     * (hidden) placeholder. Best-effort: failures are logged, never thrown.
-     */
-    private preserveDirectories;
     /**
      * Compare two snapshots for equality (same paths, same size, same mtime).
      * Returns true if they are identical, false otherwise.

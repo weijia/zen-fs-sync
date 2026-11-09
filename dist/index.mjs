@@ -156,36 +156,6 @@ async function walkFiles(fs, root, filter) {
   await visit(normalizedRoot);
   return results;
 }
-async function collectDirectories(fs, root, filter) {
-  const results = [];
-  const normalizedRoot = normalizePath(root);
-  async function visit(dir) {
-    let entries;
-    try {
-      entries = await fs.readdir(dir);
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry === ".zenfs-sync") continue;
-      const fullPath = resolvePath(dir, entry);
-      let relPath = fullPath.slice(normalizedRoot.length) || "/";
-      if (!relPath.startsWith("/")) relPath = "/" + relPath;
-      let stat;
-      try {
-        stat = await fs.stat(fullPath);
-      } catch {
-        continue;
-      }
-      if (isDirectory(stat)) {
-        if (isPathAllowed(relPath, filter)) results.push(relPath);
-        await visit(fullPath);
-      }
-    }
-  }
-  await visit(normalizedRoot);
-  return results;
-}
 async function buildSnapshot(fs, root, filter) {
   const normalizedRoot = normalizePath(root);
   const fsName = fs.backendName || "unknown";
@@ -377,6 +347,7 @@ var SyncPair = class {
   resolver;
   state = "idle" /* Idle */;
   lastResult;
+  lastError;
   lastCheckTime;
   totalSyncs = 0;
   // 轮询定时器列表（远程 shouldSync 轮询，或两端都不支持变更检测时的兜底轮询）
@@ -440,6 +411,9 @@ var SyncPair = class {
       }
       result.durationMs = Date.now() - startTime;
       this.lastResult = result;
+      if (result.errors && result.errors.length > 0) {
+        this.lastError = { message: result.errors[0].message, timestamp: result.timestamp };
+      }
       this.totalSyncs++;
       this.state = this.pollTimers.length > 0 ? "watching" /* Watching */ : "idle" /* Idle */;
       const hasActivity = result.filesCreated > 0 || result.filesUpdated > 0 || result.filesDeleted > 0 || result.conflicts.length > 0;
@@ -455,6 +429,7 @@ var SyncPair = class {
       return result;
     } catch (error) {
       this.state = this.pollTimers.length > 0 ? "watching" /* Watching */ : "idle" /* Idle */;
+      this.lastError = { message: error instanceof Error ? error.message : String(error), timestamp: Date.now() };
       log3(`[zen-fs-sync] sync ERROR pairId=${this.pairId}`, error);
       this.emit({
         type: "sync:error",
@@ -546,6 +521,7 @@ var SyncPair = class {
       state: this.state,
       lastResult: this.lastResult,
       lastCheckTime: this.lastCheckTime,
+      lastError: this.lastError,
       // 是否正在 watch：有轮询定时器或处于 Watching 状态
       watching: this.pollTimers.length > 0 || this.state === "watching" /* Watching */,
       totalSyncs: this.totalSyncs
@@ -611,6 +587,7 @@ var SyncPair = class {
     let filesDeleted = 0;
     let filesSkipped = 0;
     const conflicts = [];
+    const errors = [];
     for (const change of changes) {
       const srcPath = resolvePath(this.root, change.path);
       const tgtPath = resolvePath(this.root, change.path);
@@ -667,6 +644,7 @@ var SyncPair = class {
             else filesUpdated++;
           } catch (err) {
             log3(`[zen-fs-sync] WRITE FAIL ${change.type} [${directionLabel}] ${srcPath} \u2192 ${tgtPath}:`, err);
+            errors.push({ path: change.path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
           break;
@@ -679,13 +657,13 @@ var SyncPair = class {
             filesDeleted++;
           } catch (err) {
             log3(`[zen-fs-sync] DELETE SKIP [${directionLabel}] ${tgtPath}:`, err);
+            errors.push({ path: change.path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
           break;
         }
       }
     }
-    await this.preserveDirectories(src, tgt);
     return {
       pairId: this.pairId,
       direction: this.options.direction,
@@ -695,6 +673,7 @@ var SyncPair = class {
       filesDeleted,
       filesSkipped,
       conflicts,
+      errors,
       changes,
       durationMs: 0
       // 由 sync() 方法填充
@@ -751,6 +730,7 @@ var SyncPair = class {
     let filesSkipped = 0;
     const conflicts = [];
     const changes = [];
+    const errors = [];
     const allPaths = /* @__PURE__ */ new Set([...srcSnap.keys(), ...tgtSnap.keys()]);
     for (const path of allPaths) {
       const srcEntry = srcSnap.get(path);
@@ -766,6 +746,7 @@ var SyncPair = class {
             changes.push({ path, type: "deleted" /* Deleted */, targetSnapshot: tgtEntry });
           } catch (err) {
             log3(`[zen-fs-sync] DELETE SKIP (src deleted) target ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         } else {
@@ -780,6 +761,7 @@ var SyncPair = class {
             }
           } catch (err) {
             log3(`[zen-fs-sync] COPY FAIL target\u2192source ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         }
@@ -794,6 +776,7 @@ var SyncPair = class {
             changes.push({ path, type: "deleted" /* Deleted */, sourceSnapshot: srcEntry });
           } catch (err) {
             log3(`[zen-fs-sync] DELETE SKIP (tgt deleted) source ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         } else {
@@ -808,6 +791,7 @@ var SyncPair = class {
             }
           } catch (err) {
             log3(`[zen-fs-sync] COPY FAIL source\u2192target ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
           }
         }
@@ -824,6 +808,7 @@ var SyncPair = class {
             tgtContent = await this.target.readFile(fullPath, "utf-8");
           } catch (err) {
             log3(`[zen-fs-sync] CONTENT READ FAIL ${path}:`, err);
+            errors.push({ path, message: err instanceof Error ? err.message : String(err) });
             filesSkipped++;
             continue;
           }
@@ -849,6 +834,7 @@ var SyncPair = class {
               }
             } catch (err) {
               log3(`[zen-fs-sync] UPDATE FAIL ${fromLabel} ${path}:`, err);
+              errors.push({ path, message: err instanceof Error ? err.message : String(err) });
               filesSkipped++;
             }
           }
@@ -878,8 +864,6 @@ var SyncPair = class {
         }
       }
     }
-    await this.preserveDirectories(this.source, this.target);
-    await this.preserveDirectories(this.target, this.source);
     const durationMs = Date.now() - startTime;
     log3(`[zen-fs-sync] syncBidirectional END pairId=${this.pairId} +${filesCreated}/~${filesUpdated}/-${filesDeleted} ${durationMs}ms`);
     return {
@@ -891,6 +875,7 @@ var SyncPair = class {
       filesDeleted,
       filesSkipped,
       conflicts,
+      errors,
       changes,
       durationMs
     };
@@ -907,28 +892,6 @@ var SyncPair = class {
       return fs.createSnapshot(this.root, this.options.filter);
     }
     return buildSnapshot(fs, this.root, this.options.filter);
-  }
-  /**
-   * Preserve empty directories across backends (zen-fs-sync/docs/SyncableFS.md §2).
-   *
-   * A backend that cannot store empty directories (Git, RemoteStorage) keeps a
-   * directory alive with an internal `.keep` placeholder that is hidden from
-   * callers. Because the sync snapshot is file-based, empty directories are not
-   * represented, so the sync engine must explicitly `mkdir` each source
-   * directory on the target. The target's own `mkdir` then produces its own
-   * (hidden) placeholder. Best-effort: failures are logged, never thrown.
-   */
-  async preserveDirectories(source, target) {
-    try {
-      const dirs = await collectDirectories(source, this.root, this.options.filter);
-      for (const relDir of dirs) {
-        if (relDir === "/") continue;
-        const fullDir = resolvePath(this.root, relDir);
-        await ensureDir(target, fullDir);
-      }
-    } catch (err) {
-      log3(`[zen-fs-sync] preserveDirectories FAIL: ${err}`);
-    }
   }
   /**
    * Compare two snapshots for equality (same paths, same size, same mtime).

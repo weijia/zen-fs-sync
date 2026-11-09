@@ -33,7 +33,6 @@ import { IncrementalDetector } from './detector/incremental';
 import { DefaultConflictResolver } from './strategy/default';
 import {
   buildSnapshot,
-  collectDirectories,
   ensureDir,
   generatePairId,
   normalizePath,
@@ -479,9 +478,6 @@ export class SyncPair {
       }
     }
 
-    // Preserve empty directories on the target (zen-fs-sync/docs/SyncableFS.md §2).
-    await this.preserveDirectories(src, tgt);
-
     return {
       pairId: this.pairId,
       direction: this.options.direction,
@@ -715,10 +711,6 @@ export class SyncPair {
       }
     }
 
-    // Preserve empty directories on both sides (zen-fs-sync/docs/SyncableFS.md §2).
-    await this.preserveDirectories(this.source, this.target);
-    await this.preserveDirectories(this.target, this.source);
-
     const durationMs = Date.now() - startTime;
     log(`[zen-fs-sync] syncBidirectional END pairId=${this.pairId} +${filesCreated}/~${filesUpdated}/-${filesDeleted} ${durationMs}ms`);
 
@@ -750,29 +742,6 @@ export class SyncPair {
       return fs.createSnapshot(this.root, this.options.filter);
     }
     return buildSnapshot(fs, this.root, this.options.filter);
-  }
-
-  /**
-   * Preserve empty directories across backends (zen-fs-sync/docs/SyncableFS.md §2).
-   *
-   * A backend that cannot store empty directories (Git, RemoteStorage) keeps a
-   * directory alive with an internal `.keep` placeholder that is hidden from
-   * callers. Because the sync snapshot is file-based, empty directories are not
-   * represented, so the sync engine must explicitly `mkdir` each source
-   * directory on the target. The target's own `mkdir` then produces its own
-   * (hidden) placeholder. Best-effort: failures are logged, never thrown.
-   */
-  private async preserveDirectories(source: SyncableFS, target: SyncableFS): Promise<void> {
-    try {
-      const dirs = await collectDirectories(source, this.root, this.options.filter);
-      for (const relDir of dirs) {
-        if (relDir === '/') continue;
-        const fullDir = resolvePath(this.root, relDir);
-        await ensureDir(target, fullDir);
-      }
-    } catch (err) {
-      log(`[zen-fs-sync] preserveDirectories FAIL: ${err}`);
-    }
   }
 
   /**

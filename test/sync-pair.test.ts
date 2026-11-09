@@ -217,7 +217,7 @@ describe('SyncPair', () => {
     // 让一侧快照抛错：getSnapshot 返回 null 时只是 SKIP，这里改为 sync 过程中直接抛
     const pair = new SyncPair(src, broken, { direction: SyncDirection.BiDirectional }, '/');
     // MockFS 提供 createSnapshot；broken 没有 → buildSnapshot → readdir reject → null → SKIP。
-    // 要触发 pair 级异常，用 preserveDirectories 之外的路径：直接让 detector 抛错较难，
+    // 要触发 pair 级异常，用 sync 主流程之外的路径：直接让 detector 抛错较难，
     // 因此这里验证"快照 null 不写 lastError"的反向断言。
     await pair.sync();
     expect(pair.getStatus().lastError).toBeUndefined();
@@ -317,25 +317,25 @@ describe('ZenFSSync', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 空目录保活：Git / RemoteStorage 无法存储空目录，sync 引擎必须显式 mkdir
-// （zen-fs-sync/docs/SyncableFS.md §2）
+// 空目录不镜像：快照基于文件，sync 引擎不再为空目录执行 mkdir
 // ---------------------------------------------------------------------------
-describe('SyncPair: 空目录保活', () => {
-  it('单向同步：目标端保留源端的空目录', async () => {
+describe('SyncPair: 空目录不再镜像', () => {
+  it('单向同步：源端的空目录不会出现在目标端', async () => {
     const source = new MockFS();
     await source.mkdir('/emptydir');
     await source.writeFile('/app.json', '{}');
     const target = new MockFS();
 
     const pair = new SyncPair(source, target, { direction: SyncDirection.OneWay }, '/');
-    await pair.sync();
+    const result = await pair.sync();
 
     expect(target.getContent('/app.json')).toBe('{}');
-    // 空目录本身没有文件、进不了快照，必须靠 mkdir 保活
-    expect(await target.exists('/emptydir')).toBe(true);
+    // 空目录不在快照中，也不会被 mkdir 到目标端
+    expect(result.filesCreated).toBe(1);
+    expect(await target.exists('/emptydir')).toBe(false);
   });
 
-  it('双向同步：两端各自保留对方的空目录', async () => {
+  it('双向同步：两端空目录互不镜像', async () => {
     const src = new MockFS();
     await src.mkdir('/fromSrc');
     await src.writeFile('/a.json', '1');
@@ -346,22 +346,7 @@ describe('SyncPair: 空目录保活', () => {
     const pair = new SyncPair(src, tgt, { direction: SyncDirection.BiDirectional }, '/');
     await pair.sync();
 
-    expect(await tgt.exists('/fromSrc')).toBe(true);
-    expect(await src.exists('/fromTgt')).toBe(true);
-  });
-
-  it('空目录在快照中不会出现、也不会被同步成文件', async () => {
-    const source = new MockFS();
-    await source.mkdir('/emptydir');
-    const target = new MockFS();
-
-    const pair = new SyncPair(source, target, { direction: SyncDirection.OneWay }, '/');
-    const result = await pair.sync();
-
-    // 空目录不产生任何文件变更
-    expect(result.filesCreated).toBe(0);
-    expect(result.filesUpdated).toBe(0);
-    // 但目录本身被保活
-    expect(await target.exists('/emptydir')).toBe(true);
+    expect(await tgt.exists('/fromSrc')).toBe(false);
+    expect(await src.exists('/fromTgt')).toBe(false);
   });
 });
